@@ -1,8 +1,8 @@
-Projekt Zespolowy
+Projekt zespołowy
 ================
 
-Skrypt w bashu do uruchamiania streamingu na raspberry PI obrazu z kamery przez sieć na podane ip i port.
-Do przesyłu wykorzystano bibliotekę ffmpeg, którą należy wcześniej pobrać na malinkę.
+Skrypt w bashu do uruchamiania streamingu na Raspberry PI obrazu z kamery przez sieć na podane IP i port.
+Do przesyłu wykorzystano bibliotekę FFMPEG, którą należy wcześniej pobrać na malinkę.
 ```bash
 #!/bin/bash
 ip=$1
