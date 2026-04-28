@@ -442,7 +442,7 @@ class MainWindow(QMainWindow):
         self.update_status("Idle")
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("UDP Video Receiver with Real‑Time Head Detection")
+        self.setWindowTitle("Projekt Zespołowy | Prototyp 1 | Feed plus YOLOv8")
         self.resize(960, 760)
 
         central_widget = QWidget(self)
