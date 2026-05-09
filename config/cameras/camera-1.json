@@ -1,0 +1,141 @@
+{
+  "camera_id": "camera-1",
+  "name": "Camera 1",
+  "udp_url": "udp://0.0.0.0:5000",
+  "source_type": "file",
+  "source_value": "/home/zelgith/Downloads/20260509110530065.mp4",
+  "loop_file": false,
+  "detector_model_path": "models/yolo26m.pt",
+  "detector_use_augmentation": false,
+  "tracker_backend": "botsort",
+  "tracker_config_path": "config/trackers/botsort.yaml",
+  "tracker_persist": true,
+  "tracker_reid_enabled": true,
+  "tracker_track_buffer": 60,
+  "tracker_match_thresh": 0.8,
+  "tracker_new_track_thresh": 0.5,
+  "tracker_proximity_thresh": 0.5,
+  "tracker_appearance_thresh": 0.25,
+  "enabled": true,
+  "frame_width": 640,
+  "frame_height": 480,
+  "homography_image_to_world": [
+    [
+      0.004119970940550848,
+      0.0001426465956506115,
+      -0.011471710769877451
+    ],
+    [
+      -0.00037656171553891916,
+      0.008481035087034738,
+      -1.539804002943547
+    ],
+    [
+      -4.165414088365922e-05,
+      2.2794659929753194e-05,
+      1.0
+    ]
+  ],
+  "entry_zone_ids": [],
+  "exit_zone_ids": [],
+  "calibration_pairs": [
+    {
+      "image_point": [
+        0.07258064516129033,
+        884.9737338362069
+      ],
+      "world_point": [
+        0.014615666946308725,
+        5.830283957845433
+      ]
+    },
+    {
+      "image_point": [
+        16.802419354838708,
+        1616.0358297413793
+      ],
+      "world_point": [
+        0.0880217072147651,
+        11.986881586651053
+      ]
+    },
+    {
+      "image_point": [
+        1875.7016129032259,
+        1617.4360183189656
+      ],
+      "world_point": [
+        8.127752726510067,
+        11.991327576112413
+      ]
+    },
+    {
+      "image_point": [
+        325.79637096774195,
+        1185.8688038793102
+      ],
+      "world_point": [
+        1.9990693162751678,
+        7.720268588992974
+      ]
+    },
+    {
+      "image_point": [
+        2205.2721774193546,
+        448.4422144396552
+      ],
+      "world_point": [
+        9.99102086828859,
+        1.2225922131147542
+      ]
+    },
+    {
+      "image_point": [
+        907.6391129032259,
+        389.7615840517241
+      ],
+      "world_point": [
+        3.3527553481543624,
+        1.19207406323185
+      ]
+    },
+    {
+      "image_point": [
+        1550.5221774193549,
+        303.60452586206895
+      ],
+      "world_point": [
+        6.992515205536913,
+        0.8685048302107727
+      ]
+    },
+    {
+      "image_point": [
+        1023.2600806451613,
+        717.6057381465517
+      ],
+      "world_point": [
+        4.6768167994966445,
+        4.798539959016393
+      ]
+    }
+  ],
+  "track_timeout_s": 3.0,
+  "zone_entry_min_duration_s": 0.35,
+  "return_threshold_s": 30.0,
+  "global_match_distance_m": 1.5,
+  "global_match_time_s": 2.0,
+  "tracker_max_missed_frames": 24,
+  "tracker_max_world_distance_m": 0.5,
+  "tracker_max_image_distance_px": 85.0,
+  "tracker_min_iou": 0.08,
+  "tracker_anchor_weight": 0.65,
+  "tracker_iou_weight": 0.25,
+  "tracker_confidence_weight": 0.05,
+  "global_reid_grace_period_s": 20.0,
+  "global_reid_max_distance_m": 1.2,
+  "global_reid_max_image_distance_px": 140.0,
+  "global_reid_min_appearance_similarity": 0.72,
+  "global_reid_location_weight": 0.4,
+  "global_reid_appearance_weight": 0.6
+}
