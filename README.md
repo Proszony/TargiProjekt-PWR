@@ -60,16 +60,6 @@ Konfiguracja
 
 Jeżeli nie wczytasz pliku mapy, aplikacja użyje pustego tła z siatką i nadal pozwoli kalibrować oraz rysować strefy w przestrzeni 2D.
 
-Rekomendowane presety
----------------------
-RTX 3060 Ti 8 GB:
-
-- tryb zbalansowany: `yolo26m.pt` + `BoT-SORT` + `Inference size 640`
-- trudny pojedynczy clip MP4: `yolo26l.pt` + `BoT-SORT` + `Inference size 640` albo `768`
-- lżejszy live stream: `yolo26s.pt` + `ByteTrack` albo `BoT-SORT`, zależnie od sceny
-
-Domyślna rekomendacja dla tego projektu to `yolo26m.pt + BoT-SORT`, z wyłączonym `Robust detection` na żywo i opcjonalnym włączeniem go dla trudnych nagrań offline.
-
 Testy
 -----
 ```bash
