@@ -1,0 +1,9 @@
+av
+numpy
+opencv-python
+PySide6
+ultralytics
+torchreid
+onnxruntime-gpu
+gdown
+tensorboard

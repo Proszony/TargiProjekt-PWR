@@ -1,5 +1,0 @@
-av
-numpy
-opencv-python
-PySide6
-ultralytics

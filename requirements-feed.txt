@@ -1,4 +1,0 @@
-av
-numpy
-opencv-python
-PySide6

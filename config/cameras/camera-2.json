@@ -1,0 +1,102 @@
+{
+  "camera_id": "camera-2",
+  "name": "Camera 2",
+  "display_order": 1,
+  "panel_color": "#2563eb",
+  "udp_url": "udp://0.0.0.0:5000",
+  "source_type": "file",
+  "source_value": "/home/zelgith/Downloads/prawa.mp4",
+  "loop_file": false,
+  "detector_family": "yolo26",
+  "detector_variant": "m",
+  "detector_model_path": "models/yolo26m.pt",
+  "detector_use_augmentation": false,
+  "tracker_family": "botsort",
+  "tracker_backend": "botsort",
+  "tracker_config_path": "config/trackers/botsort.yaml",
+  "tracker_persist": true,
+  "tracker_with_reid": true,
+  "tracker_reid_enabled": true,
+  "tracker_track_buffer": 16,
+  "tracker_match_thresh": 0.75,
+  "tracker_new_track_thresh": 0.35,
+  "tracker_proximity_thresh": 0.6,
+  "tracker_appearance_thresh": 0.2,
+  "reid_enabled": true,
+  "camera_identity_enabled": true,
+  "enabled": true,
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "homography_image_to_world": [
+    [
+      0.02990127672611967,
+      0.04084330413574212,
+      -33.863765351073035
+    ],
+    [
+      -0.006415573014737216,
+      0.10031612144797715,
+      -29.136293122430462
+    ],
+    [
+      0.00026643497149402077,
+      0.0034099380167340433,
+      1.0
+    ]
+  ],
+  "coverage_polygon_image": [
+    [
+      1510.2714285714285,
+      280.66843220338984
+    ],
+    [
+      1118.7428571428572,
+      170.323093220339
+    ],
+    [
+      871.8857142857142,
+      179.71875
+    ],
+    [
+      676.1714285714286,
+      258.00158898305085
+    ],
+    [
+      416.6857142857143,
+      265.83845338983053
+    ],
+    [
+      411.0,
+      1077.0
+    ],
+    [
+      1506.0,
+      1077.0
+    ],
+    [
+      1500.1,
+      878.7155720338983
+    ]
+  ],
+  "coverage_auto_generated": false,
+  "coverage_confidence": 0.3552061631944444,
+  "coverage_warning_text": "Projected coverage polygon was simplified during sanitization.",
+  "calibration_rmse_px": null,
+  "calibration_max_error_px": null,
+  "calibration_warning_text": "Projected coverage polygon was simplified during sanitization.",
+  "calibration_valid": true,
+  "entry_zone_ids": [],
+  "exit_zone_ids": [],
+  "anchor_observations": [],
+  "overlap_camera_ids": [],
+  "allow_auto_overlap": true,
+  "track_timeout_s": 1.2,
+  "tracker_max_missed_frames": 10,
+  "bbox_publish_ttl_s": 0.15,
+  "tracker_max_world_distance_m": 0.5,
+  "tracker_max_image_distance_px": 85.0,
+  "tracker_min_iou": 0.08,
+  "tracker_anchor_weight": 0.65,
+  "tracker_iou_weight": 0.25,
+  "tracker_confidence_weight": 0.05
+}
