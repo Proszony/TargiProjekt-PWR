@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.models import AnalyticsSnapshot, GlobalTrack, VenueMapConfig
+from core.models import AnalyticsSnapshot, VenueMapConfig
 from core.statistics_repository import StatisticsRepository
 
 
@@ -36,13 +36,11 @@ class StatisticsService:
         self,
         snapshot: AnalyticsSnapshot,
         venue_map: VenueMapConfig,
-        global_tracks: dict[str, GlobalTrack] | None = None,
     ) -> None:
         if self.current_session_id is None:
             return
-        self.repository.record_events(self.current_session_id, snapshot.recent_events)
-        self.repository.record_snapshot(self.current_session_id, snapshot, venue_map)
-        self.repository.upsert_track_lifecycle(
+        self.repository.record_visit_sessions(
             self.current_session_id,
-            global_tracks or snapshot.active_global_tracks,
+            snapshot.finalized_visit_sessions_recent,
         )
+        self.repository.record_snapshot(self.current_session_id, snapshot, venue_map)

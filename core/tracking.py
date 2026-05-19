@@ -257,9 +257,13 @@ class SimpleWorldTracker:
     ) -> bool:
         if track.missed_frames <= 0:
             return anchor_score <= 0.28 and appearance_similarity >= 0.45
+        if track.missed_frames <= 2 and anchor_score <= 0.35:
+            return True
         if anchor_score <= 0.2:
             return True
-        return anchor_score <= 0.45 and appearance_similarity >= 0.5
+        if anchor_score <= 0.45 and appearance_similarity >= 0.35:
+            return True
+        return anchor_score <= 0.60 and appearance_similarity >= 0.50
 
     @staticmethod
     def _appearance_similarity(descriptor_a: list[float], descriptor_b: list[float]) -> float:

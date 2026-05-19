@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 
@@ -28,6 +28,8 @@ class ImageCanvas(QWidget):
         self._add_enabled = False
         self._show_labels = True
         self._handle_radius = 8.0
+        self._polygon_mode = False
+        self._polygon_closed = True
         self.setMinimumSize(320, 240)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -69,10 +71,18 @@ class ImageCanvas(QWidget):
         self._selected_index = index
         self.update()
 
+    def selected_point(self) -> int | None:
+        return self._selected_index
+
     def clear_points(self) -> None:
         self._points.clear()
         self._pending_point = None
         self._selected_index = None
+        self.update()
+
+    def set_polygon_mode(self, enabled: bool, *, closed: bool = True) -> None:
+        self._polygon_mode = enabled
+        self._polygon_closed = closed
         self.update()
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
@@ -86,6 +96,8 @@ class ImageCanvas(QWidget):
             return
 
         painter.drawImage(target_rect, self._image)
+        if self._polygon_mode and len(self._points) >= 2:
+            self._draw_polygon(painter, self._points, closed=self._polygon_closed)
         for index, point in enumerate(self._points):
             self._draw_point(
                 painter,
@@ -97,6 +109,11 @@ class ImageCanvas(QWidget):
             )
 
         if self._pending_point is not None:
+            if self._polygon_mode and self._points:
+                previous = self.image_to_widget(self._points[-1])
+                current = self.image_to_widget(self._pending_point)
+                painter.setPen(QPen(QColor("#5eead4"), 2, Qt.DashLine))
+                painter.drawLine(previous, current)
             self._draw_point(
                 painter,
                 self._pending_point,
@@ -216,3 +233,24 @@ class ImageCanvas(QWidget):
         if self._show_labels:
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(widget_point + QPointF(10, -10), str(label))
+
+    def _draw_polygon(
+        self,
+        painter: QPainter,
+        points: list[tuple[float, float]],
+        *,
+        closed: bool,
+    ) -> None:
+        if len(points) < 2:
+            return
+        path = QPainterPath()
+        path.moveTo(self.image_to_widget(points[0]))
+        for point in points[1:]:
+            path.lineTo(self.image_to_widget(point))
+        if closed and len(points) >= 3:
+            path.closeSubpath()
+            fill = QColor("#38bdf8")
+            fill.setAlpha(42)
+            painter.fillPath(path, fill)
+        painter.setPen(QPen(QColor("#38bdf8"), 2))
+        painter.drawPath(path)

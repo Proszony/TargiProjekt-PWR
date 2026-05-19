@@ -34,7 +34,7 @@ class UltralyticsTrackerAdapter:
         model = self._ensure_model()
         tracker_path = self._resolve_tracker_path(camera_config.tracker_config_path)
         results = model.track(
-            source=frame_bgr,
+            frame_bgr,
             stream=False,
             persist=camera_config.tracker_persist,
             conf=self.confidence,
@@ -56,7 +56,7 @@ class UltralyticsTrackerAdapter:
             x1, y1, x2, y2 = [int(value) for value in box.xyxy[0].tolist()]
             bbox = (x1, y1, x2, y2)
             confidence = float(box.conf[0].item())
-            if _reject_fragmentary_border_detection(frame_bgr.shape[:2], bbox, confidence):
+            if track_id is None and _reject_fragmentary_border_detection(frame_bgr.shape[:2], bbox, confidence):
                 continue
             anchor_image = bottom_center(bbox)
             anchor_world = project_point(homography, anchor_image)

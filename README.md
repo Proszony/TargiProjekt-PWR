@@ -1,31 +1,29 @@
 Projekt zespołowy
 =================
 
-Repozytorium zawiera prototyp systemu monitoringu targów oparty o wspólną mapę 2D hali. Raspberry Pi wysyła obraz z kamery przez UDP, a aplikacja na komputerze wykrywa osoby, śledzi ich pozycje, rzutuje je do przestrzeni hali i liczy metryki dla stref stoisk.
+Repozytorium zawiera aplikację do **booth analytics** na wspólnej mapie 2D hali. System synchronizuje wiele kamer, śledzi osoby lokalnie w każdej kamerze, deduplikuje je wyłącznie w obszarach overlapu i liczy proste, użyteczne metryki stoisk.
 
-Najważniejsze elementy
-----------------------
-- odbiór strumienia UDP z kamery,
+Najważniejsze możliwości
+------------------------
+- odbiór kamer UDP lub lokalnych plików MP4,
 - detekcja osób YOLO,
-- tracking wieloobiektowy przez Ultralytics Track Mode z BoT-SORT albo ByteTrack,
+- lokalny tracking przez Ultralytics Track Mode z BoT-SORT,
 - kalibracja kamera -> mapa hali przez homografię,
-- definiowanie stref na mapie 2D,
-- liczenie obłożenia stref, czasu pobytu i powrotów.
+- definiowanie stoisk i stref na mapie 2D,
+- overlap-only deduplication, żeby ograniczyć podwójne liczenie w nakładających się kamerach,
+- liczenie:
+  - aktualnego occupancy,
+  - liczby wizyt,
+  - średniego czasu przy stoisku,
+  - mediany czasu przy stoisku,
+  - peak occupancy,
+  - timeline occupancy.
 
-Detektor a tracker
+Semantyka produktu
 ------------------
-- Detektor odpowiada za znalezienie osoby na pojedynczej klatce.
-- Tracker odpowiada za utrzymanie tego samego ID między klatkami.
-- Stabilne ID nie wynika z samego mocniejszego modelu detekcji. W praktyce trzeba połączyć detekcję z MOT i pamięcią trackera.
-
-`Robust detection`
-------------------
-Opcja `Robust detection` włącza augmented inference po stronie detektora. To nadal jest ten sam model, ale uruchamiany w droższym trybie testowym z dodatkowymi transformacjami obrazu.
-
-- `Off`: szybsze działanie, mniejsze zużycie GPU.
-- `On`: wolniejsze działanie, ale zwykle lepsza detekcja małych osób, profilu i trudniejszych ujęć monitoringu.
-
-Ta opcja poprawia jakość detekcji, ale nie zastępuje pamięci trackera.
+- To nie jest już produkt do pełnej identyfikacji osoby między wszystkimi kamerami.
+- Cross-camera matching służy tylko do **deduplikacji countingu w overlapie**.
+- Poza overlapem aplikacja nie obiecuje event-wide continuity tej samej osoby.
 
 Uruchomienie
 ------------
@@ -35,28 +33,14 @@ Uruchomienie
    ```
 2. Uruchom aplikację:
    ```bash
-   python raspberry-feed-yolo.py
+   python main.py
    ```
-
-Streaming z Raspberry Pi
-------------------------
-Do przesyłu wykorzystano `ffmpeg`, które należy wcześniej zainstalować na Raspberry Pi.
-
-```bash
-#!/bin/bash
-ip=$1
-port=$2
-
-ffmpeg -f v4l2 -framerate 15 -video_size 640x480 -i /dev/video0 \
-  -c:v h264_v4l2m2m -b:v 1M -f mpegts udp://$ip:$port
-```
 
 Konfiguracja
 ------------
-- `config/venue.json`: mapa hali i strefy.
-- `config/cameras/camera-1.json`: konfiguracja kamery, progi trackingu i kalibracja.
-- `config/trackers/botsort.yaml`: bazowa konfiguracja BoT-SORT.
-- `config/trackers/bytetrack.yaml`: bazowa konfiguracja ByteTrack.
+- `config/project.json`: projekt, playback sync, overlap dedup, analytics.
+- `config/cameras/*.json`: źródła kamer, tracking, kalibracja, coverage.
+- `config/venue.json`: mapa hali i strefy / stoiska.
 
 Jeżeli nie wczytasz pliku mapy, aplikacja użyje pustego tła z siatką i nadal pozwoli kalibrować oraz rysować strefy w przestrzeni 2D.
 

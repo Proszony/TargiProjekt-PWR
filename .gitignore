@@ -3,3 +3,5 @@
 data/
 __pycache__/
 /yolo*.pt
+/rtdetr-*.pt
+/models/reid/

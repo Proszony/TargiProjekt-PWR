@@ -3,10 +3,18 @@ from __future__ import annotations
 from typing import Iterable, Literal
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QBrush, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from core.models import AnalyticsSnapshot, Point, VenueMapConfig, ZoneDefinition
+from core.models import (
+    AnalyticsSnapshot,
+    CameraCoverageOverlay,
+    CameraOverlapOverlay,
+    Point,
+    VenueMapConfig,
+    WorldViewport,
+    ZoneDefinition,
+)
 from core.zones import zone_color
 
 
@@ -26,8 +34,11 @@ class MapView(QWidget):
         super().__init__()
         self.venue_map = VenueMapConfig()
         self.analytics_snapshot = AnalyticsSnapshot(timestamp=0.0)
+        self._camera_coverages: list[CameraCoverageOverlay] = []
+        self._camera_overlaps: list[CameraOverlapOverlay] = []
         self._background = QImage()
         self._content_rect = QRectF()
+        self._world_viewport = WorldViewport()
         self._mode: Literal["view", "pick_points", "draw_zone", "edit_zone"] = "view"
         self._draft_zone_name = ""
         self._draft_zone_kind = "neutral"
@@ -49,10 +60,24 @@ class MapView(QWidget):
             self._background = image if not image.isNull() else QImage()
         else:
             self._background = QImage()
+        if venue_map.manual_viewport_override is not None:
+            self._world_viewport = venue_map.manual_viewport_override
+        self.update()
+
+    def set_world_viewport(self, viewport: WorldViewport) -> None:
+        self._world_viewport = viewport
         self.update()
 
     def set_snapshot(self, snapshot: AnalyticsSnapshot) -> None:
         self.analytics_snapshot = snapshot
+        self.update()
+
+    def set_camera_coverages(self, coverages: list[CameraCoverageOverlay]) -> None:
+        self._camera_coverages = coverages
+        self.update()
+
+    def set_camera_overlaps(self, overlaps: list[CameraOverlapOverlay]) -> None:
+        self._camera_overlaps = overlaps
         self.update()
 
     def set_mode(self, mode: Literal["view", "pick_points", "draw_zone", "edit_zone"]) -> None:
@@ -113,6 +138,8 @@ class MapView(QWidget):
         self._content_rect = self._calculate_content_rect()
         self._paint_background(painter)
         self._paint_grid(painter)
+        self._paint_camera_coverages(painter)
+        self._paint_camera_overlaps(painter)
         self._paint_zones(painter)
         self._paint_tracks(painter)
         self._paint_calibration_points(painter)
@@ -307,18 +334,66 @@ class MapView(QWidget):
                         fill="#fb923c",
                     )
 
-    def _paint_tracks(self, painter: QPainter) -> None:
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#ffe66d"))
-        for track in self.analytics_snapshot.active_global_tracks.values():
-            point_world = track.smoothed_ground_anchor_world or track.ground_anchor_world
-            if point_world is None:
+    def _paint_camera_coverages(self, painter: QPainter) -> None:
+        for coverage in self._camera_coverages:
+            raw_polygon = coverage.raw_polygon_world
+            clipped_polygon = coverage.polygon_world
+            if len(raw_polygon) >= 3:
+                path = self._zone_path(raw_polygon)
+                pen = QPen(QColor(coverage.color))
+                pen.setWidth(1)
+                pen.setStyle(Qt.DashLine)
+                raw_color = QColor(coverage.color)
+                raw_color.setAlpha(70)
+                pen.setColor(raw_color)
+                painter.setPen(pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+            if len(clipped_polygon) < 3:
                 continue
-            point = self.world_to_widget(point_world)
-            painter.drawEllipse(point, 5, 5)
-            painter.setPen(QColor("#f8f9fa"))
-            painter.drawText(point + QPointF(6, -6), track.global_track_id)
-            painter.setPen(Qt.NoPen)
+            path = self._zone_path(clipped_polygon)
+            fill = QColor(coverage.color)
+            fill.setAlpha(36)
+            painter.fillPath(path, fill)
+            pen = QPen(QColor(coverage.color))
+            pen.setWidth(2)
+            pen.setStyle(Qt.SolidLine)
+            painter.setPen(pen)
+            painter.drawPath(path)
+            painter.setPen(QColor("#cbd5e1"))
+            painter.drawText(self._polygon_label_point(clipped_polygon), coverage.camera_name)
+
+    def _paint_camera_overlaps(self, painter: QPainter) -> None:
+        for overlay in self._camera_overlaps:
+            if len(overlay.polygon_world) < 3:
+                continue
+            path = self._zone_path(overlay.polygon_world)
+            fill = QColor("#f59e0b")
+            fill.setAlpha(82)
+            painter.fillPath(path, fill)
+            brush = QBrush(QColor("#fbbf24"), Qt.BDiagPattern)
+            painter.fillPath(path, brush)
+            pen = QPen(QColor("#f97316"))
+            pen.setWidth(2)
+            pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawPath(path)
+            self._draw_text_chip(
+                painter,
+                self._polygon_label_point(overlay.polygon_world),
+                overlay.label,
+                background="#7c2d12",
+                foreground="#fff7ed",
+            )
+
+    def _paint_tracks(self, painter: QPainter) -> None:
+        for presence in self.analytics_snapshot.active_map_presences:
+            point = self.world_to_widget(presence.world_point)
+            fill_color = QColor("#ffe66d")
+            border_color = QColor("#f59e0b") if presence.merged_for_counting else QColor("#0f1720")
+            painter.setPen(QPen(border_color, 2 if presence.merged_for_counting else 1))
+            painter.setBrush(fill_color)
+            painter.drawEllipse(point, 6, 6)
 
     def _paint_calibration_points(self, painter: QPainter) -> None:
         for index, point in enumerate(self._calibration_points, start=1):
@@ -377,6 +452,40 @@ class MapView(QWidget):
             path.closeSubpath()
         return path
 
+    def _polygon_label_point(self, polygon: list[Point]) -> QPointF:
+        if not polygon:
+            return QPointF()
+        center_x = sum(point[0] for point in polygon) / len(polygon)
+        center_y = sum(point[1] for point in polygon) / len(polygon)
+        return self.world_to_widget((center_x, center_y)) + QPointF(6, -6)
+
+    def _draw_text_chip(
+        self,
+        painter: QPainter,
+        point: QPointF,
+        text: str,
+        *,
+        background: str,
+        foreground: str,
+    ) -> None:
+        metrics = painter.fontMetrics()
+        text_rect = metrics.boundingRect(text)
+        width = text_rect.width() + 12
+        height = text_rect.height() + 8
+        x = point.x()
+        y = point.y() - height
+        if x + width > self._content_rect.right() - 4:
+            x = max(self._content_rect.left() + 4, point.x() - width - 12)
+        if y < self._content_rect.top() + 4:
+            y = min(self._content_rect.bottom() - height - 4, point.y() + 4)
+        painter.setPen(QPen(QColor("#00000000")))
+        chip_color = QColor(background)
+        chip_color.setAlpha(220)
+        painter.setBrush(chip_color)
+        painter.drawRoundedRect(QRectF(x, y, width, height), 6, 6)
+        painter.setPen(QColor(foreground))
+        painter.drawText(QPointF(x + 6, y + metrics.ascent() + 4), text)
+
     def _calculate_content_rect(self) -> QRectF:
         margin = 12.0
         target = self.rect().adjusted(int(margin), int(margin), int(-margin), int(-margin))
@@ -388,18 +497,24 @@ class MapView(QWidget):
         return QRectF(left, top, scaled.width(), scaled.height())
 
     def world_to_widget(self, point: Point) -> QPointF:
-        width = max(self.venue_map.world_width_m, 1e-6)
-        height = max(self.venue_map.world_height_m, 1e-6)
-        x = self._content_rect.left() + (point[0] / width) * self._content_rect.width()
-        y = self._content_rect.top() + (point[1] / height) * self._content_rect.height()
+        width = max(self._world_viewport.max_x - self._world_viewport.min_x, 1e-6)
+        height = max(self._world_viewport.max_y - self._world_viewport.min_y, 1e-6)
+        x = self._content_rect.left() + ((point[0] - self._world_viewport.min_x) / width) * self._content_rect.width()
+        y = self._content_rect.top() + ((point[1] - self._world_viewport.min_y) / height) * self._content_rect.height()
         return QPointF(x, y)
 
     def widget_to_world(self, position: tuple[float, float]) -> Point | None:
         point = QPointF(position[0], position[1])
         if not self._content_rect.contains(point):
             return None
-        world_x = ((position[0] - self._content_rect.left()) / max(self._content_rect.width(), 1e-6)) * self.venue_map.world_width_m
-        world_y = ((position[1] - self._content_rect.top()) / max(self._content_rect.height(), 1e-6)) * self.venue_map.world_height_m
+        width = max(self._world_viewport.max_x - self._world_viewport.min_x, 1e-6)
+        height = max(self._world_viewport.max_y - self._world_viewport.min_y, 1e-6)
+        world_x = self._world_viewport.min_x + (
+            (position[0] - self._content_rect.left()) / max(self._content_rect.width(), 1e-6)
+        ) * width
+        world_y = self._world_viewport.min_y + (
+            (position[1] - self._content_rect.top()) / max(self._content_rect.height(), 1e-6)
+        ) * height
         return (world_x, world_y)
 
     def _zone_at(self, point: Point) -> ZoneDefinition | None:

@@ -82,6 +82,8 @@ def annotate_frame(
     tracks: dict[int, LocalTrack],
     camera_config: CameraConfig,
     venue_map: VenueMapConfig,
+    *,
+    render_timestamp: float | None = None,
 ) -> np.ndarray:
     annotated = frame_bgr.copy()
     inverse_homography = invert_homography(camera_config.homography_image_to_world)
@@ -109,22 +111,13 @@ def annotate_frame(
     for track in tracks.values():
         if track.current_bbox_xyxy is None:
             continue
+        if (
+            render_timestamp is not None
+            and render_timestamp - track.last_seen_ts > camera_config.bbox_publish_ttl_s
+        ):
+            continue
         x1, y1, x2, y2 = track.current_bbox_xyxy
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 0), 2)
-        display_id = track.display_track_id or f"L{track.local_track_id}"
-        label = display_id
-        if track.active_zone_id:
-            label += f" [{track.active_zone_id}]"
-        cv2.putText(
-            annotated,
-            label,
-            (x1, max(20, y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
         if track.ground_anchor_image is not None:
             anchor = (int(track.ground_anchor_image[0]), int(track.ground_anchor_image[1]))
             cv2.circle(annotated, anchor, 5, (255, 255, 0), -1)

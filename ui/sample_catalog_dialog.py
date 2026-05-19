@@ -33,8 +33,8 @@ SAMPLE_SOURCES = [
     {
         "title": "Shopping mall atrium",
         "angle": "Elevated atrium overview",
-        "use_case": "Good for return-rate and multi-zone transitions.",
-        "notes": "Useful when you want repeated entries/exits across neighboring sectors.",
+        "use_case": "Good for booth dwell and multi-zone occupancy testing.",
+        "notes": "Useful when you want repeated booth entries and exits across neighboring sectors.",
         "url": "https://www.pexels.com/video/the-atrium-of-a-shopping-mall-with-people-walking-around-19765671/",
     },
 ]
