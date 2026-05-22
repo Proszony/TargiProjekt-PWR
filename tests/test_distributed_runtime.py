@@ -7,11 +7,10 @@ from pathlib import Path
 
 from core.models import (
     CameraConfig,
-    CameraIdentityTrack,
     CameraTrackingPacket,
     DistributedRuntimeConfig,
+    LocalTrack,
     MultiCameraRuntimeSnapshot,
-    OverlapDedupConfig,
     ProjectConfig,
     VenueMapConfig,
     ZoneDefinition,
@@ -52,18 +51,20 @@ def _packet(
         frame_index=frame_index,
         source_fps=source_fps,
         processing_latency_s=processing_latency_s,
-        camera_identity_tracks={
-            person_id: CameraIdentityTrack(
-                camera_person_id=person_id,
+        local_tracks={
+            1: LocalTrack(
                 camera_id=camera_id,
+                local_track_id=1,
                 current_bbox_xyxy=(10, 10, 30, 60),
                 ground_anchor_world=point,
                 smoothed_ground_anchor_world=point,
-                appearance_prototype=list(appearance),
-                appearance_memory=[list(appearance)],
+                confidence=0.9,
+                first_seen_ts=1.0,
+                last_seen_ts=1.0,
+                appearance_descriptor=list(appearance),
+                active=True,
             )
         },
-        reid_backend_ready=True,
         frame_size=(640, 480),
         coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
         fps=fps,
@@ -142,7 +143,6 @@ class DistributedRuntimeTests(unittest.TestCase):
                         coverage_polygon_world=[(0.5, 0.0), (4.5, 0.0), (4.5, 4.0), (0.5, 4.0)],
                     ),
                 ],
-                overlap_dedup=OverlapDedupConfig(confirmation_frames=1),
                 distributed_runtime=DistributedRuntimeConfig(enabled=True),
             )
             manager = MultiCameraPipelineManager(project, StatisticsService(root), root)

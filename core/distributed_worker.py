@@ -163,8 +163,6 @@ class DistributedCameraWorker:
             project_root=self.project_root,
             playback_sync_config=self._playback_sync,
             session_sync_mode=self._session_sync_mode,
-            reid_config=self.project_config.reid,
-            identity_config=self.project_config.identity,
             file_playback_started_wall_time=file_playback_started_wall_time,
             confidence=0.18,
             inference_size=736,

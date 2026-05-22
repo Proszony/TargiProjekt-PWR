@@ -390,8 +390,7 @@ class MapView(QWidget):
         for presence in self.analytics_snapshot.active_map_presences:
             point = self.world_to_widget(presence.world_point)
             fill_color = QColor("#ffe66d")
-            border_color = QColor("#f59e0b") if presence.merged_for_counting else QColor("#0f1720")
-            painter.setPen(QPen(border_color, 2 if presence.merged_for_counting else 1))
+            painter.setPen(QPen(QColor("#0f1720"), 1))
             painter.setBrush(fill_color)
             painter.drawEllipse(point, 6, 6)
 

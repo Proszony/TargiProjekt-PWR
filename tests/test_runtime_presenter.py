@@ -14,12 +14,7 @@ class RuntimePresenterTests(unittest.TestCase):
             session_sync_mode="all_file_strict",
             session_media_time_s=1.0,
             active_analytics_track_count=2,
-            deduped_overlap_track_count=1,
             active_map_presence_count=2,
-            merged_map_presence_count=1,
-            map_presence_matches_rejected_geometry=2,
-            map_presence_matches_rejected_margin=1,
-            map_presence_matches_rejected_time=0,
         )
 
         first = presenter.submit(analytics, runtime, calibration_suffix="", now_s=1.0)
@@ -32,7 +27,7 @@ class RuntimePresenterTests(unittest.TestCase):
         self.assertNotIn("Identity", first.status_bar_text)
         self.assertIn("Current occupancy", first.tracks_stats_text)
         self.assertIn("Map presences", first.status_bar_text)
-        self.assertIn("Rejected g/t/m", first.status_bar_text)
+        self.assertNotIn("Overlap merges", first.status_bar_text)
 
     def test_same_payload_does_not_force_fast_repaint(self) -> None:
         presenter = RuntimePresenter(refresh_interval_s=0.25)

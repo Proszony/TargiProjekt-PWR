@@ -9,14 +9,12 @@ import av
 from PySide6.QtCore import QObject, Signal, Slot
 
 from core import runtime_defaults as rd
-from core.camera_identity import CameraIdentityEngine
 from core.calibration import recompute_camera_coverage
 from core.coverage_mapping import propose_coverage_polygon_image
 from core.detection import YoloPersonDetector, annotate_frame, qimage_from_bgr
 from core.media_time import resolve_media_time, resolve_stream_fps
 from core.model_catalog import resolve_detector_model_spec
-from core.models import CameraConfig, CameraTrackingPacket, IdentityConfig, LocalTrack, PlaybackSyncConfig, ReIDConfig, VenueMapConfig
-from core.reid_manager import ReIDManager
+from core.models import CameraConfig, CameraTrackingPacket, LocalTrack, PlaybackSyncConfig, VenueMapConfig
 from core.statistics_service import StatisticsService
 from core.tracker_adapter import UltralyticsTrackerAdapter
 from core.tracking import SimpleWorldTracker
@@ -48,8 +46,6 @@ class CameraPipelineWorker(QObject):
         project_root: Path,
         playback_sync_config: PlaybackSyncConfig | None = None,
         session_sync_mode: str = "all_live_unsynced",
-        reid_config: ReIDConfig | None = None,
-        identity_config: IdentityConfig | None = None,
         file_playback_started_wall_time: float | None = None,
         model_path: str = rd.DEFAULT_DETECTOR_MODEL_PATH,
         confidence: float = rd.DEFAULT_DETECTOR_CONFIDENCE,
@@ -70,8 +66,6 @@ class CameraPipelineWorker(QObject):
         self.project_root = project_root
         self.playback_sync_config = playback_sync_config or PlaybackSyncConfig()
         self.session_sync_mode = session_sync_mode
-        self.reid_config = reid_config or ReIDConfig()
-        self.identity_config = identity_config or IdentityConfig()
         self.file_playback_started_wall_time = file_playback_started_wall_time
         self._running = False
         self._container: Optional[av.container.InputContainer] = None
@@ -104,12 +98,6 @@ class CameraPipelineWorker(QObject):
             confidence=confidence,
             inference_size=inference_size,
             use_augmentation=rd.DEFAULT_DETECTOR_AUGMENTATION,
-        )
-        self._reid_manager = ReIDManager(self.reid_config, self.project_root)
-        self._camera_identity = CameraIdentityEngine(
-            camera_config.camera_id,
-            self.identity_config,
-            self.reid_config,
         )
         self._on_frame_ready = on_frame_ready
         self._on_camera_packet_ready = on_camera_packet_ready
@@ -180,8 +168,6 @@ class CameraPipelineWorker(QObject):
                         self._tracker.anchor_weight = rd.DEFAULT_TRACKER_ANCHOR_WEIGHT
                         self._tracker.iou_weight = rd.DEFAULT_TRACKER_IOU_WEIGHT
                         self._tracker.confidence_weight = rd.DEFAULT_TRACKER_CONFIDENCE_WEIGHT
-                        self._camera_identity.identity_config = self.identity_config
-                        self._camera_identity.reid_config = self.reid_config
 
                     local_tracks: dict[int, LocalTrack] = {}
                     expired_tracks: list[LocalTrack] = []
@@ -202,24 +188,6 @@ class CameraPipelineWorker(QObject):
                     self._refresh_camera_coverage(camera_config, frame_bgr)
                     self._annotate_track_geometry(local_tracks, frame_bgr.shape[1], frame_bgr.shape[0])
                     self._annotate_expired_tracks(expired_tracks, frame_bgr.shape[1], frame_bgr.shape[0])
-                    tracklet_observations = self._reid_manager.build_tracklet_observations(
-                        frame_bgr,
-                        camera_config,
-                        local_tracks,
-                        timestamp=timestamp,
-                        frame_index=self._frame_index,
-                        media_time_s=media_time_s,
-                    )
-                    camera_identity_tracks, expired_camera_identity_tracks, identity_debug_records = (
-                        self._camera_identity.update(
-                            timestamp,
-                            local_tracks,
-                            expired_tracks,
-                            tracklet_observations,
-                        )
-                    )
-                    reid_status = self._reid_manager.status()
-
                     annotated = annotate_frame(
                         frame_bgr,
                         local_tracks,
@@ -253,13 +221,8 @@ class CameraPipelineWorker(QObject):
                             sync_ready=(media_time_s is not None) if camera_config.source_type == "file" else True,
                             dropped_frame_count=self._dropped_frames,
                             processing_latency_s=processing_latency_s,
-                            tracklet_observations=tracklet_observations,
                             local_tracks=dict(local_tracks),
                             expired_tracks=list(expired_tracks),
-                            camera_identity_tracks=camera_identity_tracks,
-                            expired_camera_identity_tracks=expired_camera_identity_tracks,
-                            identity_debug_records=identity_debug_records,
-                            reid_backend_ready=reid_status.available,
                             frame_size=(frame_bgr.shape[1], frame_bgr.shape[0]),
                             coverage_polygon_image=(
                                 list(camera_config.coverage_polygon_image)
@@ -324,7 +287,6 @@ class CameraPipelineWorker(QObject):
         with self._config_lock:
             self.camera_config = camera_config
             self.venue_map = venue_map
-            self._camera_identity.camera_id = camera_config.camera_id
 
     def set_playback_sync(
         self,
@@ -336,13 +298,6 @@ class CameraPipelineWorker(QObject):
         self.file_playback_started_wall_time = file_playback_started_wall_time
         if session_sync_mode is not None:
             self.session_sync_mode = session_sync_mode
-
-    def set_identity_configs(self, reid_config: ReIDConfig, identity_config: IdentityConfig) -> None:
-        self.reid_config = reid_config
-        self.identity_config = identity_config
-        self._reid_manager = ReIDManager(reid_config, self.project_root)
-        self._camera_identity.identity_config = identity_config
-        self._camera_identity.reid_config = reid_config
 
     def set_detection_enabled(self, enabled: bool) -> None:
         self._detection_enabled = enabled

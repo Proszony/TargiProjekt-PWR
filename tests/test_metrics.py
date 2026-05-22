@@ -58,35 +58,35 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(snapshot.zone_metrics["booth-a"].current_occupancy, 2)
         self.assertEqual(snapshot.zone_metrics["booth-a"].peak_occupancy, 2)
 
-    def test_overlap_dedup_track_counts_once(self) -> None:
+    def test_single_local_presence_counts_once(self) -> None:
         presence = MapPresence(
-            presence_id="A000001",
+            presence_id="camera-1:L1",
             world_point=(1.0, 1.0),
-            source_camera_ids=["camera-1", "camera-2"],
-            source_camera_person_ids={"camera-1": "camera-1:P00001", "camera-2": "camera-2:P00007"},
-            merged_for_counting=True,
-            dedup_mode="overlap_merged",
+            source_camera_ids=["camera-1"],
+            source_camera_person_ids={"camera-1": "camera-1:L1"},
+            merged_for_counting=False,
+            dedup_mode="local_only",
         )
         self.engine.update(0.0, [presence])
         snapshot = self.engine.update(0.6, [presence])
         self.assertEqual(snapshot.active_zone_counts.get("booth-a"), 1)
 
-    def test_two_merged_pairs_count_as_two_booth_occupants(self) -> None:
+    def test_two_camera_local_presences_count_as_two_booth_occupants(self) -> None:
         presence_a = MapPresence(
-            presence_id="A000001",
+            presence_id="camera-1:L1",
             world_point=(1.0, 1.0),
-            source_camera_ids=["camera-1", "camera-2"],
-            source_camera_person_ids={"camera-1": "camera-1:P00001", "camera-2": "camera-2:P00007"},
-            merged_for_counting=True,
-            dedup_mode="overlap_merged",
+            source_camera_ids=["camera-1"],
+            source_camera_person_ids={"camera-1": "camera-1:L1"},
+            merged_for_counting=False,
+            dedup_mode="local_only",
         )
         presence_b = MapPresence(
-            presence_id="A000002",
+            presence_id="camera-2:L1",
             world_point=(2.0, 2.0),
-            source_camera_ids=["camera-1", "camera-2"],
-            source_camera_person_ids={"camera-1": "camera-1:P00002", "camera-2": "camera-2:P00008"},
-            merged_for_counting=True,
-            dedup_mode="overlap_merged",
+            source_camera_ids=["camera-2"],
+            source_camera_person_ids={"camera-2": "camera-2:L1"},
+            merged_for_counting=False,
+            dedup_mode="local_only",
         )
         self.engine.update(0.0, [presence_a, presence_b])
         snapshot = self.engine.update(0.6, [presence_a, presence_b])

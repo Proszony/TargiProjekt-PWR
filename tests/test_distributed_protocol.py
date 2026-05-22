@@ -7,7 +7,7 @@ from core.distributed_serialization import (
     preview_frame_from_network_dict,
     preview_frame_to_network_dict,
 )
-from core.models import CameraIdentityTrack, CameraTrackingPacket, IdentityDebugRecord, LocalTrack, TrackletObservation
+from core.models import CameraTrackingPacket, LocalTrack
 
 
 class DistributedProtocolTests(unittest.TestCase):
@@ -37,22 +37,6 @@ class DistributedProtocolTests(unittest.TestCase):
             sync_ready=True,
             dropped_frame_count=2,
             processing_latency_s=0.03,
-            tracklet_observations=[
-                TrackletObservation(
-                    camera_id="camera-1",
-                    tracker_track_id=3,
-                    timestamp=1.5,
-                    bbox_xyxy=(10, 20, 30, 40),
-                    ground_anchor_world=(1.0, 2.0),
-                    ground_anchor_image=(15.0, 35.0),
-                    confidence=0.8,
-                    appearance_embedding=[0.1, 0.9],
-                    frame_index=12,
-                    media_time_s=1.4,
-                    entry_edge="left",
-                    exit_edge="right",
-                )
-            ],
             local_tracks={
                 3: LocalTrack(
                     camera_id="camera-1",
@@ -64,27 +48,6 @@ class DistributedProtocolTests(unittest.TestCase):
                     bbox_center_image=(20.0, 30.0),
                 )
             },
-            camera_identity_tracks={
-                "camera-1:P00001": CameraIdentityTrack(
-                    camera_person_id="camera-1:P00001",
-                    camera_id="camera-1",
-                    appearance_prototype=[0.2, 0.8],
-                    appearance_memory=[[0.2, 0.8]],
-                    current_bbox_xyxy=(10, 20, 30, 40),
-                    ground_anchor_world=(1.0, 2.0),
-                    smoothed_ground_anchor_world=(1.0, 2.0),
-                )
-            },
-            identity_debug_records=[
-                IdentityDebugRecord(
-                    camera_id="camera-1",
-                    tracker_track_id=3,
-                    camera_person_id="camera-1:P00001",
-                    reason="track-continued",
-                    score=0.9,
-                )
-            ],
-            reid_backend_ready=True,
             frame_size=(1920, 1080),
             coverage_polygon_image=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
             coverage_polygon_world=[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0)],
@@ -101,13 +64,9 @@ class DistributedProtocolTests(unittest.TestCase):
         self.assertEqual(restored.camera_id, packet.camera_id)
         self.assertEqual(restored.frame_index, packet.frame_index)
         self.assertEqual(restored.frame_size, packet.frame_size)
-        self.assertEqual(restored.tracklet_observations[0].bbox_xyxy, (10, 20, 30, 40))
         self.assertEqual(restored.local_tracks[3].smoothed_ground_anchor_world, (1.0, 2.0))
-        self.assertEqual(
-            restored.camera_identity_tracks["camera-1:P00001"].appearance_prototype,
-            [0.2, 0.8],
-        )
-        self.assertTrue(restored.reid_backend_ready)
+        self.assertEqual(restored.coverage_polygon_world, packet.coverage_polygon_world)
+        self.assertEqual(restored.fps, packet.fps)
 
     def test_preview_frame_serialization_round_trip(self) -> None:
         payload = preview_frame_to_network_dict(

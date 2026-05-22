@@ -73,10 +73,6 @@ class RuntimePresenter:
             f"Current occupancy: {analytics_snapshot.total_current_occupancy} | "
             f"Avg dwell: {mean_avg_dwell:.1f}s | "
             f"Map presences: {runtime_snapshot.active_map_presence_count} | "
-            f"Overlap merges: {runtime_snapshot.merged_map_presence_count} | "
-            f"Rejected g/t/m: {runtime_snapshot.map_presence_matches_rejected_geometry}/"
-            f"{runtime_snapshot.map_presence_matches_rejected_time}/"
-            f"{runtime_snapshot.map_presence_matches_rejected_margin} | "
             f"Drift max: {max_drift:.3f}s | "
             f"Missing: {len(runtime_snapshot.missing_cameras)}"
             f"{calibration_suffix}"
@@ -85,8 +81,7 @@ class RuntimePresenter:
             f"Current occupancy: {analytics_snapshot.total_current_occupancy} | "
             f"Visits: {analytics_snapshot.total_entries} | "
             f"Booths active: {active_booths} | "
-            f"Map presences: {runtime_snapshot.active_map_presence_count} | "
-            f"Overlap merges: {runtime_snapshot.merged_map_presence_count}"
+            f"Map presences: {runtime_snapshot.active_map_presence_count}"
         )
         fps_text = (
             f"Aggregate FPS: {aggregate:.1f} | "

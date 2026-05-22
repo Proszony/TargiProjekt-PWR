@@ -11,10 +11,8 @@ from core.camera_overlap import build_camera_overlap_graph
 from core.distributed_server import DistributedRuntimeServer
 from core.media_sync import MultiCameraMediaSynchronizer
 from core.metrics import AnalyticsEngine
-from core.overlap_dedup import OverlapDedupEngine
 from core.models import (
     AnalyticsSnapshot,
-    CameraIdentityTrack,
     CameraConfig,
     CameraTrackingPacket,
     MapPresence,
@@ -52,11 +50,6 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images: dict[str, dict[int, object]] = {}
         self._latest_remote_preview_images: dict[str, QImage] = {}
         self._latest_remote_labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
-        self._expired_buffer: list[CameraIdentityTrack] = []
-        self._overlap_dedup = OverlapDedupEngine(
-            project_config.overlap_dedup,
-            project_config.reid,
-        )
         self._analytics = AnalyticsEngine(
             venue_map=project_config.venue_map,
             zone_entry_min_duration_s=project_config.analytics.zone_entry_min_duration_s,
@@ -74,8 +67,6 @@ class MultiCameraPipelineManager(QObject):
 
     def update_project_config(self, project_config: ProjectConfig) -> None:
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
-        self._overlap_dedup.dedup_config = self.project_config.overlap_dedup
-        self._overlap_dedup.reid_config = self.project_config.reid
         self._analytics.venue_map = self.project_config.venue_map
         self._analytics.zone_entry_min_duration_s = self.project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = self.project_config.analytics.zone_exit_grace_s
@@ -115,7 +106,6 @@ class MultiCameraPipelineManager(QObject):
                 self._file_playback_started_wall_time,
                 self._session_sync_mode,
             )
-            worker.set_identity_configs(self.project_config.reid, self.project_config.identity)
             worker.set_detection_enabled(camera.enabled)
             worker.set_detector_model_path(camera.detector_model_path)
             worker.set_detector_augmentation(camera.detector_use_augmentation)
@@ -151,8 +141,6 @@ class MultiCameraPipelineManager(QObject):
             return
         self._running = True
         self._packets.clear()
-        self._expired_buffer.clear()
-        self._overlap_dedup.reset()
         self._analytics.reset()
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
@@ -232,8 +220,6 @@ class MultiCameraPipelineManager(QObject):
 
     def update_project(self, project_config: ProjectConfig) -> None:
         self.project_config = project_config
-        self._overlap_dedup.dedup_config = project_config.overlap_dedup
-        self._overlap_dedup.reid_config = project_config.reid
         self._analytics.venue_map = project_config.venue_map
         self._analytics.zone_entry_min_duration_s = project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = project_config.analytics.zone_exit_grace_s
@@ -246,7 +232,6 @@ class MultiCameraPipelineManager(QObject):
                     self._file_playback_started_wall_time,
                     self._session_sync_mode,
                 )
-                worker.set_identity_configs(project_config.reid, project_config.identity)
         if self._remote_server is not None:
             self._remote_server.update_project_config(project_config)
 
@@ -259,8 +244,6 @@ class MultiCameraPipelineManager(QObject):
             project_root=self.project_root,
             playback_sync_config=self.project_config.playback_sync,
             session_sync_mode=self._session_sync_mode,
-            reid_config=self.project_config.reid,
-            identity_config=self.project_config.identity,
             file_playback_started_wall_time=self._file_playback_started_wall_time,
             confidence=rd.DEFAULT_DETECTOR_CONFIDENCE,
             inference_size=rd.DEFAULT_DETECTOR_INFERENCE_SIZE,
@@ -280,7 +263,6 @@ class MultiCameraPipelineManager(QObject):
             self._file_playback_started_wall_time,
             self._session_sync_mode,
         )
-        worker.set_identity_configs(self.project_config.reid, self.project_config.identity)
         self._workers[camera_config.camera_id] = worker
         self._threads[camera_config.camera_id] = worker_thread
         worker_thread.start()
@@ -396,29 +378,10 @@ class MultiCameraPipelineManager(QObject):
                 else None
             )
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
-        for packet in camera_packets.values():
-            self._expired_buffer.extend(packet.expired_camera_identity_tracks)
         overlap_graph = build_camera_overlap_graph(self.project_config.cameras, self.project_config.overlap_dedup)
-        active_by_camera = {
-            camera_id: packet.camera_identity_tracks
-            for camera_id, packet in camera_packets.items()
-            if camera_lookup.get(camera_id, CameraConfig()).calibration_valid
-        }
-        analytics_tracks = self._overlap_dedup.update(
-            timestamp,
-            active_by_camera,
-            list(self._expired_buffer),
-            overlap_graph,
-        )
-        map_presences = self._overlap_dedup.resolve_map_presences(
-            timestamp,
-            active_by_camera,
-            overlap_graph,
-            self.project_config.map_dedup,
-        )
-        self._expired_buffer.clear()
+        map_presences = self._build_local_map_presences(camera_packets)
         analytics_snapshot = self._analytics.update(timestamp, map_presences)
-        labels_by_camera = self._build_operator_labels(camera_packets, map_presences)
+        labels_by_camera = self._build_operator_labels(camera_packets)
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
         self._latest_remote_labels_by_camera = {
             camera_id: list(labels_by_camera.get(camera_id, []))
@@ -428,9 +391,6 @@ class MultiCameraPipelineManager(QObject):
         for camera_id, image in self._latest_remote_preview_images.items():
             labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
             self.camera_frame_ready.emit(camera_id, labeled)
-        considered_pairs, merged_pairs = self._overlap_dedup.last_map_presence_stats()
-        map_debug_stats = self._overlap_dedup.map_debug_stats()
-        deduped_overlap_track_count = merged_pairs
         runtime_snapshot = MultiCameraRuntimeSnapshot(
             timestamp=timestamp,
             analytics_snapshot=analytics_snapshot,
@@ -441,21 +401,8 @@ class MultiCameraPipelineManager(QObject):
             sync_drift_by_camera_s=dict(sync_drift_by_camera),
             dropped_frames_by_camera=dict(dropped_frames_by_camera),
             missing_cameras=list(missing_cameras),
-            dedup_mode="overlap_only",
-            overlap_dedup_ready=all(packet.reid_backend_ready for packet in camera_packets.values()),
-            overlap_debug_records=self._overlap_dedup.consume_debug_records(),
-            active_analytics_track_count=sum(1 for track in analytics_tracks.values() if track.active),
-            deduped_overlap_track_count=deduped_overlap_track_count,
+            active_analytics_track_count=len(map_presences),
             active_map_presence_count=len(map_presences),
-            merged_map_presence_count=merged_pairs,
-            map_presence_debug_pairs_considered=considered_pairs,
-            map_presence_debug_pairs_merged=merged_pairs,
-            overlap_tracklets_active=map_debug_stats.overlap_tracklets_active,
-            map_presence_matches_committed=map_debug_stats.matches_committed,
-            map_presence_matches_rejected_geometry=map_debug_stats.matches_rejected_geometry,
-            map_presence_matches_rejected_margin=map_debug_stats.matches_rejected_margin,
-            map_presence_matches_rejected_time=map_debug_stats.matches_rejected_time,
-            map_presence_matches_without_appearance=map_debug_stats.matches_without_appearance,
         )
         if timestamp - self._last_snapshot_persisted_at >= 1.0:
             self.statistics_service.record_snapshot(
@@ -505,22 +452,52 @@ class MultiCameraPipelineManager(QObject):
             self.camera_frame_ready.emit(camera_id, labeled)
             self._drop_stale_frame_images(camera_id, keep_from_index=packet.frame_index - 1)
 
+    def _build_local_map_presences(
+        self,
+        camera_packets: dict[str, CameraTrackingPacket],
+    ) -> list[MapPresence]:
+        camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
+        presences: list[MapPresence] = []
+        for camera_id, packet in camera_packets.items():
+            camera = camera_lookup.get(camera_id)
+            if camera is None or not camera.enabled or not camera.calibration_valid:
+                continue
+            for local_track_id, track in packet.local_tracks.items():
+                if not track.active:
+                    continue
+                point = track.smoothed_ground_anchor_world or track.ground_anchor_world
+                if point is None:
+                    continue
+                presence_id = f"{camera_id}:L{local_track_id}"
+                presences.append(
+                    MapPresence(
+                        presence_id=presence_id,
+                        world_point=point,
+                        source_camera_ids=[camera_id],
+                        source_camera_person_ids={camera_id: presence_id},
+                        merged_for_counting=False,
+                        confidence=track.confidence,
+                        dedup_mode="local_only",
+                        first_seen_ts=track.first_seen_ts,
+                        last_seen_ts=track.last_seen_ts,
+                    )
+                )
+        presences.sort(key=lambda item: item.presence_id)
+        return presences
+
     @staticmethod
     def _build_operator_labels(
         camera_packets: dict[str, CameraTrackingPacket],
-        map_presences: list[MapPresence],
     ) -> dict[str, list[tuple[tuple[int, int, int, int], str]]]:
         labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
-        for map_presence in map_presences:
-            label = map_presence.presence_id if map_presence.merged_for_counting else ""
-            for camera_id, camera_person_id in map_presence.source_camera_person_ids.items():
-                packet = camera_packets.get(camera_id)
-                if packet is None:
+        for camera_id, packet in camera_packets.items():
+            for local_track_id, track in packet.local_tracks.items():
+                bbox = track.current_bbox_xyxy or track.last_bbox_xyxy_for_matching
+                if bbox is None:
                     continue
-                identity_track = packet.camera_identity_tracks.get(camera_person_id)
-                if identity_track is None or identity_track.current_bbox_xyxy is None:
-                    continue
-                labels_by_camera.setdefault(camera_id, []).append((identity_track.current_bbox_xyxy, label))
+                labels_by_camera.setdefault(camera_id, []).append(
+                    (bbox, f"{camera_id}|L{local_track_id}")
+                )
         return labels_by_camera
 
     @staticmethod

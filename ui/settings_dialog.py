@@ -28,7 +28,7 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
 
         helper = QLabel(
-            "Only booth dwell timing is configurable here. Detection, sync, deduplication, and distributed transport run with product defaults."
+            "Only booth dwell timing is configurable here. Detection, sync, counting, and distributed transport run with product defaults."
         )
         helper.setWordWrap(True)
 

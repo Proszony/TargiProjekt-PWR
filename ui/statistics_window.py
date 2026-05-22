@@ -424,11 +424,7 @@ class StatisticsWindow(QMainWindow):
             f"Media t: {(snapshot.session_media_time_s or 0.0):.2f}s | "
             f"Drops: {total_drops} | "
             f"Missing: {missing} | "
-            f"Map presences: {snapshot.active_map_presence_count} | "
-            f"Overlap merges: {snapshot.merged_map_presence_count} | "
-            f"Rejected g/t/m: {snapshot.map_presence_matches_rejected_geometry}/"
-            f"{snapshot.map_presence_matches_rejected_time}/"
-            f"{snapshot.map_presence_matches_rejected_margin}"
+            f"Map presences: {snapshot.active_map_presence_count}"
         )
 
     def reload_history(self) -> None:
