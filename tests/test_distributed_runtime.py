@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -98,6 +99,19 @@ class DistributedRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(mode, "single_file_realtime")
+
+    def test_single_file_realtime_uses_local_playback_anchor(self) -> None:
+        before = time.perf_counter()
+        anchor = MultiCameraPipelineManager.worker_file_playback_started_wall_time(
+            "single_file_realtime",
+            session_started_at_unix_s=time.time() - 30.0,
+        )
+        after = time.perf_counter()
+
+        self.assertIsNotNone(anchor)
+        assert anchor is not None
+        self.assertGreaterEqual(anchor, before)
+        self.assertLessEqual(anchor, after)
 
     def test_remote_packet_ingestion_updates_runtime_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

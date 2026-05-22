@@ -190,6 +190,8 @@ class DistributedCameraWorker:
     def _file_playback_started_wall_time(self) -> float | None:
         if not (self._session_sync_mode.startswith("all_file") or self._session_sync_mode == "single_file_realtime"):
             return None
+        if self._session_sync_mode == "single_file_realtime":
+            return time.perf_counter()
         if self._session_started_at_unix_s is None:
             return time.perf_counter()
         return time.perf_counter() + (self._session_started_at_unix_s - time.time())

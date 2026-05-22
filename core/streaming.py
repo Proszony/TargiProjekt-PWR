@@ -126,7 +126,7 @@ class CameraPipelineWorker(QObject):
         self._running = True
         self._publish_started_listening()
         smoothed_fps = 0.0
-        last_frame_t = time.perf_counter()
+        last_processed_frame_t: float | None = None
         last_snapshot_persisted_at = 0.0
 
         while self._running:
@@ -140,12 +140,6 @@ class CameraPipelineWorker(QObject):
                 for frame in self._container.decode(video=0):
                     if not self._running:
                         break
-
-                    now = time.perf_counter()
-                    delta = max(now - last_frame_t, 1e-6)
-                    last_frame_t = now
-                    smoothed_fps = 0.1 * (1.0 / delta) + 0.9 * smoothed_fps
-                    self._publish_fps_update(smoothed_fps)
 
                     wall_time_s = time.time()
                     media_time_s = (
@@ -234,6 +228,14 @@ class CameraPipelineWorker(QObject):
                         render_timestamp=timestamp,
                     )
                     processing_latency_s = time.perf_counter() - processing_started_at
+                    processed_now = time.perf_counter()
+                    if last_processed_frame_t is not None:
+                        delta = max(processed_now - last_processed_frame_t, 1e-6)
+                        smoothed_fps = 0.1 * (1.0 / delta) + 0.9 * smoothed_fps
+                    elif self._source_fps is not None:
+                        smoothed_fps = self._source_fps
+                    last_processed_frame_t = processed_now
+                    self._publish_fps_update(smoothed_fps)
                     self._publish_frame_ready(
                         camera_config.camera_id,
                         self._frame_index,

@@ -131,7 +131,10 @@ class MultiCameraPipelineManager(QObject):
                 if self._remote_server is None:
                     self._start_remote_server()
                     if self._remote_server is not None:
-                        self._remote_server.start_session(self._session_sync_mode)
+                        self._remote_server.start_session(
+                            self._session_sync_mode,
+                            self._session_started_at_unix_s,
+                        )
                 if self._remote_server is not None:
                     self._remote_server.update_project_config(self.project_config)
                 for camera in active_remote_cameras:
@@ -207,6 +210,8 @@ class MultiCameraPipelineManager(QObject):
     ) -> float | None:
         if not (session_sync_mode.startswith("all_file") or session_sync_mode == "single_file_realtime"):
             return None
+        if session_sync_mode == "single_file_realtime":
+            return time.perf_counter()
         if session_started_at_unix_s is None:
             return time.perf_counter()
         return time.perf_counter() + (session_started_at_unix_s - time.time())
