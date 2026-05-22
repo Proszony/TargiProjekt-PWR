@@ -5,7 +5,7 @@
   "panel_color": "#2563eb",
   "udp_url": "udp://0.0.0.0:5000",
   "source_type": "file",
-  "source_value": "/home/zelgith/Downloads/lewa.mp4",
+  "source_value": "lewa.mp4",
   "loop_file": false,
   "detector_family": "yolo26",
   "detector_variant": "m",

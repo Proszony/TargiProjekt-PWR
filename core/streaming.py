@@ -390,6 +390,8 @@ class CameraPipelineWorker(QObject):
         self._dropped_frames = 0
         if camera_config.source_type == "file":
             source_path = Path(camera_config.source_value).expanduser()
+            if not source_path.is_absolute():
+                source_path = (self.project_root / source_path).resolve()
             return av.open(str(source_path))
         camera_config.udp_url = camera_config.source_value
         self.status_changed.emit(f"Listening on {camera_config.source_value}")
