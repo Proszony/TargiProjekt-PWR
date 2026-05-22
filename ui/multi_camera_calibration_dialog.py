@@ -26,6 +26,7 @@ from core.calibration import (
 from core.coverage_mapping import default_coverage_polygon_image, propose_coverage_polygon_image
 from core.models import CameraAnchorObservation, CameraConfig, CameraCoverageOverlay, Point, ProjectConfig, SharedAnchor
 from ui.canvas import ImageCanvas
+from ui.camera_colors import camera_color
 from ui.map_view import MapView
 
 
@@ -493,7 +494,7 @@ class MultiCameraCalibrationDialog(QDialog):
             CameraCoverageOverlay(
                 camera_id=camera.camera_id,
                 camera_name=camera.name,
-                color=camera.panel_color,
+                color=camera_color(camera.display_order, camera.camera_id),
                 polygon_world=list(camera.coverage_polygon_world or []),
                 raw_polygon_world=list(camera.coverage_polygon_world_raw or []),
                 calibration_valid=camera.calibration_valid,

@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -25,29 +24,24 @@ from PySide6.QtWidgets import (
 )
 
 from core.camera_overlap import build_camera_overlap_graph
-from core.model_catalog import infer_detector_family, infer_detector_variant
 from core.models import CameraConfig, OverlapDedupConfig
-from ui.sample_catalog_dialog import SampleCatalogDialog
 
 
 class CameraEditorDialog(QDialog):
     def __init__(
         self,
         camera_config: CameraConfig,
-        detector_models: list[tuple[str, str]],
         all_camera_ids: list[str],
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Camera settings")
-        self.resize(720, 560)
+        self.resize(680, 460)
         self._camera = CameraConfig.from_dict(camera_config.to_dict())
-        self._detector_models = detector_models
         self._all_camera_ids = [camera_id for camera_id in all_camera_ids if camera_id != self._camera.camera_id]
         self._build_ui()
         self._load_values()
         self._update_source_controls()
-        self._update_tracker_controls()
 
     @property
     def camera_config(self) -> CameraConfig:
@@ -61,40 +55,19 @@ class CameraEditorDialog(QDialog):
         self.camera_id_input = QLineEdit()
         self.camera_name_input = QLineEdit()
         self.display_order_spin = QSpinBox()
-        self.display_order_spin.setRange(0, 99)
-        self.panel_color_input = QLineEdit()
+        self.display_order_spin.setRange(0, 999)
+
+        self.runtime_mode_combo = QComboBox()
+        self.runtime_mode_combo.addItem("Local runtime", "local")
+        self.runtime_mode_combo.addItem("Remote worker", "remote")
+        self.remote_worker_id_input = QLineEdit()
 
         self.source_type_combo = QComboBox()
         self.source_type_combo.addItem("UDP stream", "udp")
         self.source_type_combo.addItem("Local MP4", "file")
         self.source_value_input = QLineEdit()
         self.browse_source_button = QPushButton("Browse...")
-        self.sample_clips_button = QPushButton("Sample clips...")
         self.loop_file_checkbox = QCheckBox("Loop playback")
-
-        self.detector_model_combo = QComboBox()
-        for label, model_path in self._detector_models:
-            self.detector_model_combo.addItem(label, model_path)
-        self.enable_detection_checkbox = QCheckBox("Enable person detection")
-        self.robust_detection_checkbox = QCheckBox("Robust detection")
-
-        self.tracker_backend_combo = QComboBox()
-        self.tracker_backend_combo.addItem("BoT-SORT", "botsort")
-        self.tracker_reid_checkbox = QCheckBox("Tracker ReID")
-        self.track_buffer_spin = QSpinBox()
-        self.track_buffer_spin.setRange(1, 300)
-        self.match_threshold_spin = QDoubleSpinBox()
-        self.match_threshold_spin.setRange(0.05, 0.99)
-        self.match_threshold_spin.setSingleStep(0.05)
-        self.new_track_threshold_spin = QDoubleSpinBox()
-        self.new_track_threshold_spin.setRange(0.05, 0.99)
-        self.new_track_threshold_spin.setSingleStep(0.05)
-        self.proximity_threshold_spin = QDoubleSpinBox()
-        self.proximity_threshold_spin.setRange(0.05, 0.99)
-        self.proximity_threshold_spin.setSingleStep(0.05)
-        self.appearance_threshold_spin = QDoubleSpinBox()
-        self.appearance_threshold_spin.setRange(0.05, 0.99)
-        self.appearance_threshold_spin.setSingleStep(0.05)
 
         self.overlap_checks: dict[str, QCheckBox] = {}
         overlap_widget = QWidget()
@@ -111,77 +84,55 @@ class CameraEditorDialog(QDialog):
         source_layout.setContentsMargins(0, 0, 0, 0)
         source_layout.addWidget(self.source_value_input, 1)
         source_layout.addWidget(self.browse_source_button)
-        source_layout.addWidget(self.sample_clips_button)
 
         form.addRow("", self.enabled_checkbox)
         form.addRow("Camera ID", self.camera_id_input)
         form.addRow("Camera name", self.camera_name_input)
         form.addRow("Display order", self.display_order_spin)
-        form.addRow("Panel color", self.panel_color_input)
+        form.addRow("Runtime mode", self.runtime_mode_combo)
+        form.addRow("Remote worker ID", self.remote_worker_id_input)
         form.addRow("Source type", self.source_type_combo)
         form.addRow("Source", source_row)
         form.addRow("", self.loop_file_checkbox)
-        form.addRow("Detector model", self.detector_model_combo)
-        form.addRow("", self.enable_detection_checkbox)
-        form.addRow("", self.robust_detection_checkbox)
-        form.addRow("Tracker", self.tracker_backend_combo)
-        form.addRow("", self.tracker_reid_checkbox)
-        form.addRow("Track buffer", self.track_buffer_spin)
-        form.addRow("Match threshold", self.match_threshold_spin)
-        form.addRow("New track threshold", self.new_track_threshold_spin)
-        form.addRow("Proximity threshold", self.proximity_threshold_spin)
-        form.addRow("Appearance threshold", self.appearance_threshold_spin)
         form.addRow("Overlap cameras", overlap_widget)
+
+        helper = QLabel(
+            "Overlap cameras only define where double-count suppression may happen. Calibration and booth mapping are handled elsewhere."
+        )
+        helper.setWordWrap(True)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         root.addLayout(form)
+        root.addWidget(helper)
         root.addWidget(self.button_box)
 
         self.button_box.accepted.connect(self._accept_if_valid)
         self.button_box.rejected.connect(self.reject)
+        self.runtime_mode_combo.currentIndexChanged.connect(self._update_source_controls)
         self.source_type_combo.currentIndexChanged.connect(self._update_source_controls)
-        self.tracker_backend_combo.currentIndexChanged.connect(self._update_tracker_controls)
         self.browse_source_button.clicked.connect(self._browse_source)
-        self.sample_clips_button.clicked.connect(self._open_samples)
 
     def _load_values(self) -> None:
         self.enabled_checkbox.setChecked(self._camera.enabled)
         self.camera_id_input.setText(self._camera.camera_id)
         self.camera_name_input.setText(self._camera.name)
         self.display_order_spin.setValue(self._camera.display_order)
-        self.panel_color_input.setText(self._camera.panel_color)
+        runtime_index = self.runtime_mode_combo.findData(self._camera.runtime_mode)
+        self.runtime_mode_combo.setCurrentIndex(max(0, runtime_index))
+        self.remote_worker_id_input.setText(self._camera.remote_worker_id)
         self.source_type_combo.setCurrentIndex(0 if self._camera.source_type == "udp" else 1)
-        self.source_value_input.setText(self._camera.source_value or self._camera.udp_url)
+        self.source_value_input.setText(self._camera.source_value)
         self.loop_file_checkbox.setChecked(self._camera.loop_file)
-        index = self.detector_model_combo.findData(self._camera.detector_model_path)
-        if index >= 0:
-            self.detector_model_combo.setCurrentIndex(index)
-        self.enable_detection_checkbox.setChecked(self._camera.enabled)
-        self.robust_detection_checkbox.setChecked(self._camera.detector_use_augmentation)
-        tracker_index = self.tracker_backend_combo.findData(self._camera.tracker_backend)
-        self.tracker_backend_combo.setCurrentIndex(max(0, tracker_index))
-        self.tracker_reid_checkbox.setChecked(self._camera.tracker_reid_enabled)
-        self.track_buffer_spin.setValue(self._camera.tracker_track_buffer)
-        self.match_threshold_spin.setValue(self._camera.tracker_match_thresh)
-        self.new_track_threshold_spin.setValue(self._camera.tracker_new_track_thresh)
-        self.proximity_threshold_spin.setValue(self._camera.tracker_proximity_thresh)
-        self.appearance_threshold_spin.setValue(self._camera.tracker_appearance_thresh)
         for camera_id, checkbox in self.overlap_checks.items():
             checkbox.setChecked(camera_id in self._camera.overlap_camera_ids)
 
     @Slot()
     def _update_source_controls(self) -> None:
         file_mode = self.source_type_combo.currentData() == "file"
-        self.browse_source_button.setVisible(file_mode)
-        self.sample_clips_button.setVisible(file_mode)
+        remote_mode = self.runtime_mode_combo.currentData() == "remote"
+        self.remote_worker_id_input.setEnabled(remote_mode)
+        self.browse_source_button.setVisible(file_mode and not remote_mode)
         self.loop_file_checkbox.setVisible(file_mode)
-
-    @Slot()
-    def _update_tracker_controls(self) -> None:
-        uses_reid = self.tracker_backend_combo.currentData() == "botsort"
-        self.tracker_reid_checkbox.setEnabled(uses_reid)
-        self.proximity_threshold_spin.setEnabled(uses_reid)
-        self.appearance_threshold_spin.setEnabled(uses_reid)
 
     @Slot()
     def _browse_source(self) -> None:
@@ -195,10 +146,6 @@ class CameraEditorDialog(QDialog):
             self.source_value_input.setText(path)
 
     @Slot()
-    def _open_samples(self) -> None:
-        SampleCatalogDialog(self).exec()
-
-    @Slot()
     def _accept_if_valid(self) -> None:
         camera_id = self.camera_id_input.text().strip()
         if not camera_id:
@@ -208,7 +155,11 @@ class CameraEditorDialog(QDialog):
         if not source_value:
             QMessageBox.warning(self, "Invalid source", "Source must not be empty.")
             return
-        if self.source_type_combo.currentData() == "file" and not Path(source_value).expanduser().exists():
+        if (
+            self.runtime_mode_combo.currentData() == "local"
+            and self.source_type_combo.currentData() == "file"
+            and not Path(source_value).expanduser().exists()
+        ):
             QMessageBox.warning(self, "Missing file", "Selected video file does not exist.")
             return
 
@@ -216,27 +167,13 @@ class CameraEditorDialog(QDialog):
         self._camera.camera_id = camera_id
         self._camera.name = self.camera_name_input.text().strip() or camera_id
         self._camera.display_order = self.display_order_spin.value()
-        self._camera.panel_color = self.panel_color_input.text().strip() or "#2563eb"
+        self._camera.runtime_mode = str(self.runtime_mode_combo.currentData())
+        self._camera.remote_worker_id = (
+            self.remote_worker_id_input.text().strip() if self._camera.runtime_mode == "remote" else ""
+        )
         self._camera.source_type = str(self.source_type_combo.currentData())
         self._camera.source_value = source_value
-        self._camera.loop_file = self.loop_file_checkbox.isChecked()
-        if self._camera.source_type == "udp":
-            self._camera.udp_url = source_value
-        self._camera.detector_model_path = str(self.detector_model_combo.currentData())
-        self._camera.detector_family = infer_detector_family(self._camera.detector_model_path)
-        self._camera.detector_variant = infer_detector_variant(self._camera.detector_model_path)
-        self._camera.enabled = self.enable_detection_checkbox.isChecked()
-        self._camera.detector_use_augmentation = self.robust_detection_checkbox.isChecked()
-        self._camera.tracker_backend = str(self.tracker_backend_combo.currentData())
-        self._camera.tracker_family = self._camera.tracker_backend
-        self._camera.tracker_with_reid = self.tracker_reid_checkbox.isChecked()
-        self._camera.tracker_reid_enabled = self.tracker_reid_checkbox.isChecked()
-        self._camera.tracker_track_buffer = self.track_buffer_spin.value()
-        self._camera.tracker_match_thresh = self.match_threshold_spin.value()
-        self._camera.tracker_new_track_thresh = self.new_track_threshold_spin.value()
-        self._camera.tracker_proximity_thresh = self.proximity_threshold_spin.value()
-        self._camera.tracker_appearance_thresh = self.appearance_threshold_spin.value()
-        self._camera.tracker_config_path = "config/trackers/botsort.yaml"
+        self._camera.loop_file = self.loop_file_checkbox.isChecked() if self._camera.source_type == "file" else False
         self._camera.overlap_camera_ids = [
             camera_id for camera_id, checkbox in self.overlap_checks.items() if checkbox.isChecked()
         ]
@@ -249,14 +186,12 @@ class CameraManagerDialog(QDialog):
     def __init__(
         self,
         cameras: list[CameraConfig],
-        detector_models: list[tuple[str, str]],
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Manage cameras")
         self.resize(820, 520)
         self._cameras = [CameraConfig.from_dict(camera.to_dict()) for camera in cameras]
-        self._detector_models = detector_models
         self._build_ui()
         self._refresh_list()
 
@@ -288,7 +223,7 @@ class CameraManagerDialog(QDialog):
         content.addLayout(buttons)
 
         self.helper_label = QLabel(
-            "Overlap cameras determine where overlap deduplication may suppress double-counting. Calibrate each camera later against shared anchors."
+            "Configure only source assignment and overlap topology here. Detection, tracking, and ReID run with internal product defaults."
         )
         self.helper_label.setWordWrap(True)
         self.overlap_status_label = QLabel("Auto overlap: no calibrated adjacent cameras yet")
@@ -314,9 +249,9 @@ class CameraManagerDialog(QDialog):
     def _refresh_list(self) -> None:
         self.camera_list.clear()
         for camera in sorted(self._cameras, key=lambda item: (item.display_order, item.camera_id)):
-            item = QListWidgetItem(
-                f"{camera.name} [{camera.camera_id}] {'(disabled)' if not camera.enabled else ''}".strip()
-            )
+            mode_suffix = "[remote]" if camera.runtime_mode == "remote" else "[local]"
+            state_suffix = "(disabled)" if not camera.enabled else ""
+            item = QListWidgetItem(f"{camera.name} [{camera.camera_id}] {mode_suffix} {state_suffix}".strip())
             item.setData(Qt.UserRole, camera.camera_id)
             self.camera_list.addItem(item)
         if self.camera_list.count():
@@ -341,7 +276,7 @@ class CameraManagerDialog(QDialog):
             name=f"Camera {next_index}",
             display_order=next_index - 1,
         )
-        dialog = CameraEditorDialog(camera, self._detector_models, [item.camera_id for item in self._cameras], self)
+        dialog = CameraEditorDialog(camera, [item.camera_id for item in self._cameras], self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self._cameras.append(dialog.camera_config)
@@ -354,13 +289,11 @@ class CameraManagerDialog(QDialog):
             return
         current_id = self._cameras[index].camera_id
         other_ids = [item.camera_id for item in self._cameras if item.camera_id != current_id]
-        dialog = CameraEditorDialog(self._cameras[index], self._detector_models, other_ids, self)
+        dialog = CameraEditorDialog(self._cameras[index], other_ids, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         updated = dialog.camera_config
-        if updated.camera_id != current_id and any(
-            camera.camera_id == updated.camera_id for camera in self._cameras
-        ):
+        if updated.camera_id != current_id and any(camera.camera_id == updated.camera_id for camera in self._cameras):
             QMessageBox.warning(self, "Duplicate camera", "Camera ID must be unique.")
             return
         self._cameras[index] = updated
@@ -415,21 +348,17 @@ class CameraManagerDialog(QDialog):
             return
         camera = self._cameras[index]
         overlap_graph = build_camera_overlap_graph(self._cameras, OverlapDedupConfig())
-        neighbors: list[str] = []
         details: list[str] = []
         for neighbor_id in sorted(overlap_graph.neighbors_of(camera.camera_id)):
             relation = overlap_graph.relation_for(camera.camera_id, neighbor_id)
             if relation is None:
                 continue
-            neighbors.append(neighbor_id)
             details.append(
                 f"{neighbor_id} (overlap {relation.overlap_area_m2:.2f} m², gap {relation.min_boundary_distance_m:.2f} m)"
             )
-        if not neighbors:
+        if not details:
             self.overlap_status_label.setText(
                 f"Auto overlap for {camera.camera_id}: no adjacent calibrated cameras detected yet"
             )
             return
-        self.overlap_status_label.setText(
-            f"Auto overlap for {camera.camera_id}: " + ", ".join(details)
-        )
+        self.overlap_status_label.setText(f"Auto overlap for {camera.camera_id}: " + ", ".join(details))

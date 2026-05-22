@@ -7,6 +7,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from core.models import CameraConfig
+from ui.camera_colors import camera_color
 
 
 @dataclass(slots=True)
@@ -14,6 +15,7 @@ class CameraPanelState:
     camera_id: str
     name: str
     color: str
+    runtime_mode: str = "local"
     status_text: str = "Idle"
     fps: float = 0.0
     media_time_s: float | None = None
@@ -55,7 +57,7 @@ class CameraPanel(QFrame):
         self.header_label.setStyleSheet(
             f"font-weight: 600; color: {self.state.color};"
         )
-        sync_bits = [f"FPS: {self.state.fps:.1f}"]
+        sync_bits = [self.state.runtime_mode, f"FPS: {self.state.fps:.1f}"]
         if self.state.media_time_s is not None:
             sync_bits.append(f"media t: {self.state.media_time_s:.2f}s")
             sync_bits.append(f"drift: {self.state.sync_drift_s:+.3f}s")
@@ -94,7 +96,8 @@ class CameraGridView(QWidget):
             states[camera.camera_id] = CameraPanelState(
                 camera_id=camera.camera_id,
                 name=camera.name,
-                color=camera.panel_color,
+                color=camera_color(camera.display_order, camera.camera_id),
+                runtime_mode=camera.runtime_mode,
                 status_text=existing.status_text if existing else ("Disabled" if not camera.enabled else "Idle"),
                 fps=existing.fps if existing else 0.0,
                 image=existing.image if existing else None,

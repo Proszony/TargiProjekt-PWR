@@ -58,7 +58,9 @@ class MultiCameraMediaSynchronizer:
             self._playback_started_wall_time = current_time - self._startup_media_time_s
             self._last_target_media_time_s = -1.0
 
-        target_media_time_s = max(current_time - self._playback_started_wall_time, 0.0)
+        target_media_time_s = self._resolve_target_media_time_s(current_time)
+        if target_media_time_s is None:
+            return None
         min_interval = 1.0 / max(self.playback_sync.target_fps, 1e-6)
         if self._last_target_media_time_s >= 0.0 and (
             target_media_time_s - self._last_target_media_time_s < min_interval * 0.8
@@ -104,6 +106,31 @@ class MultiCameraMediaSynchronizer:
         if not earliest_media_times:
             return 0.0
         return max(earliest_media_times)
+
+    def _resolve_target_media_time_s(self, current_time: float) -> float | None:
+        available_media_times: list[float] = []
+        for camera_id in self.camera_ids:
+            latest_available = self._latest_available_media_time(camera_id)
+            if latest_available is None:
+                return None
+            available_media_times.append(latest_available)
+        if not available_media_times:
+            return None
+        if self._last_target_media_time_s < 0.0:
+            return min(available_media_times)
+        return max(self._last_target_media_time_s, min(available_media_times))
+
+    def _latest_available_media_time(self, camera_id: str) -> float | None:
+        latest_selected = self._selected_packets.get(camera_id)
+        if self._buffers[camera_id]:
+            buffered_packet = self._buffers[camera_id][-1]
+            if buffered_packet.media_time_s is not None:
+                if latest_selected is None or latest_selected.media_time_s is None:
+                    return buffered_packet.media_time_s
+                return max(buffered_packet.media_time_s, latest_selected.media_time_s)
+        if latest_selected is None or latest_selected.media_time_s is None:
+            return None
+        return latest_selected.media_time_s
 
     def _select_packet(self, camera_id: str, target_media_time_s: float) -> CameraTrackingPacket | None:
         buffer = self._buffers[camera_id]

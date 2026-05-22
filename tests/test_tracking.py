@@ -67,30 +67,15 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(sorted(tracks), [42])
         self.assertEqual(tracks[42].display_track_id, None)
 
-    def test_camera_config_defaults_cover_new_tracking_fields(self) -> None:
+    def test_camera_config_defaults_cover_product_fields(self) -> None:
         config = CameraConfig.from_dict({"camera_id": "camera-1"})
         self.assertEqual(config.source_type, "udp")
         self.assertEqual(config.source_value, "udp://0.0.0.0:5000")
-        self.assertEqual(config.detector_family, "yolo26")
-        self.assertEqual(config.detector_variant, "m")
-        self.assertEqual(config.detector_model_path, "models/yolo26m.pt")
-        self.assertFalse(config.detector_use_augmentation)
-        self.assertEqual(config.tracker_family, "botsort")
-        self.assertEqual(config.tracker_backend, "botsort")
-        self.assertTrue(config.tracker_with_reid)
-        self.assertTrue(config.tracker_reid_enabled)
-        self.assertTrue(config.reid_enabled)
-        self.assertTrue(config.camera_identity_enabled)
-        self.assertEqual(config.tracker_track_buffer, 16)
-        self.assertAlmostEqual(config.tracker_match_thresh, 0.75)
-        self.assertAlmostEqual(config.tracker_new_track_thresh, 0.35)
-        self.assertAlmostEqual(config.tracker_proximity_thresh, 0.6)
-        self.assertAlmostEqual(config.tracker_appearance_thresh, 0.2)
-        self.assertAlmostEqual(config.track_timeout_s, 1.2)
-        self.assertEqual(config.tracker_max_missed_frames, 10)
-        self.assertAlmostEqual(config.bbox_publish_ttl_s, 0.15)
-        self.assertAlmostEqual(config.tracker_max_world_distance_m, 0.5)
-        self.assertAlmostEqual(config.tracker_min_iou, 0.08)
+        self.assertEqual(config.runtime_mode, "local")
+        self.assertEqual(config.remote_worker_id, "")
+        self.assertTrue(config.enabled)
+        self.assertFalse(config.loop_file)
+        self.assertEqual(config.overlap_camera_ids, [])
 
 
 if __name__ == "__main__":

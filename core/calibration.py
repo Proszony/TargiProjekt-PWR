@@ -300,6 +300,8 @@ def _diagnose_image_polygon(
     warnings: list[str] = []
     if len(polygon_image) < 3:
         return warnings
+    if frame_width <= 0 or frame_height <= 0:
+        return warnings
     for x, y in polygon_image:
         if x < 0.0 or y < 0.0 or x > frame_width or y > frame_height:
             warnings.append("Coverage polygon extends outside the image bounds.")

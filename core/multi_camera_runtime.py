@@ -6,7 +6,9 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
+from core import runtime_defaults as rd
 from core.camera_overlap import build_camera_overlap_graph
+from core.distributed_server import DistributedRuntimeServer
 from core.media_sync import MultiCameraMediaSynchronizer
 from core.metrics import AnalyticsEngine
 from core.overlap_dedup import OverlapDedupEngine
@@ -65,6 +67,7 @@ class MultiCameraPipelineManager(QObject):
         self._media_synchronizer: MultiCameraMediaSynchronizer | None = None
         self._session_sync_mode = "all_live_unsynced"
         self._file_playback_started_wall_time: float | None = None
+        self._remote_server: DistributedRuntimeServer | None = None
 
     def update_project_config(self, project_config: ProjectConfig) -> None:
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
@@ -88,6 +91,8 @@ class MultiCameraPipelineManager(QObject):
             worker.set_detection_enabled(camera.enabled)
             worker.set_detector_model_path(camera.detector_model_path)
             worker.set_detector_augmentation(camera.detector_use_augmentation)
+        if self._remote_server is not None:
+            self._remote_server.update_project_config(self.project_config)
 
     def start_all(self) -> None:
         if self._running:
@@ -100,6 +105,8 @@ class MultiCameraPipelineManager(QObject):
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
+        local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
+        remote_cameras = [camera for camera in active_cameras if camera.runtime_mode == "remote"]
         source_labels = [camera.source_value for camera in active_cameras]
         camera_ids = [camera.camera_id for camera in active_cameras]
         self._session_sync_mode = self._determine_session_sync_mode(
@@ -130,8 +137,14 @@ class MultiCameraPipelineManager(QObject):
             self._sync_timer.start(timer_interval_ms)
         else:
             self._sync_timer.stop()
-        for camera in active_cameras:
+        if remote_cameras:
+            self._start_remote_server()
+        for camera in local_cameras:
             self._start_camera_worker(camera)
+        for camera in remote_cameras:
+            self.camera_status_changed.emit(camera.camera_id, "waiting for worker")
+        if self._remote_server is not None:
+            self._remote_server.start_session(self._session_sync_mode)
         self.started.emit()
 
     @staticmethod
@@ -145,8 +158,14 @@ class MultiCameraPipelineManager(QObject):
             return
         self._running = False
         self._sync_timer.stop()
+        if self._remote_server is not None:
+            self._remote_server.stop_session()
         for worker in list(self._workers.values()):
             worker.stop()
+        if self._remote_server is not None:
+            self._remote_server.stop()
+            self._remote_server = None
+        self._finish_stop_if_possible()
 
     def update_project(self, project_config: ProjectConfig) -> None:
         self.project_config = project_config
@@ -165,6 +184,8 @@ class MultiCameraPipelineManager(QObject):
                     self._session_sync_mode,
                 )
                 worker.set_identity_configs(project_config.reid, project_config.identity)
+        if self._remote_server is not None:
+            self._remote_server.update_project_config(project_config)
 
     def _start_camera_worker(self, camera_config: CameraConfig) -> None:
         worker_thread = QThread(self)
@@ -178,8 +199,8 @@ class MultiCameraPipelineManager(QObject):
             reid_config=self.project_config.reid,
             identity_config=self.project_config.identity,
             file_playback_started_wall_time=self._file_playback_started_wall_time,
-            confidence=0.18,
-            inference_size=736,
+            confidence=rd.DEFAULT_DETECTOR_CONFIDENCE,
+            inference_size=rd.DEFAULT_DETECTOR_INFERENCE_SIZE,
         )
         worker.moveToThread(worker_thread)
         worker_thread.started.connect(worker.run)
@@ -217,7 +238,7 @@ class MultiCameraPipelineManager(QObject):
         self._process_packet_group(
             timestamp=packet.timestamp,
             camera_packets=dict(self._packets),
-            missing_cameras=[],
+            missing_cameras=self._current_missing_cameras(),
             dropped_frames_by_camera={
                 camera_id: camera_packet.dropped_frame_count
                 for camera_id, camera_packet in self._packets.items()
@@ -228,6 +249,32 @@ class MultiCameraPipelineManager(QObject):
             },
             session_media_time_s=packet.media_time_s,
         )
+
+    @Slot(object)
+    def _handle_remote_packet(self, packet: object) -> None:
+        self._handle_camera_packet(packet)
+
+    @Slot(object)
+    def _handle_remote_preview_frame(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        camera_id = str(payload.get("camera_id", ""))
+        frame_index = int(payload.get("frame_index", 0))
+        jpeg_bytes = payload.get("jpeg_bytes", b"")
+        if not camera_id or not isinstance(jpeg_bytes, (bytes, bytearray)):
+            return
+        image = QImage.fromData(bytes(jpeg_bytes), "JPEG")
+        if image.isNull():
+            return
+        self._handle_camera_frame(camera_id, frame_index, image)
+
+    @Slot(str, str)
+    def _handle_remote_camera_status(self, camera_id: str, status_text: str) -> None:
+        self.camera_status_changed.emit(camera_id, status_text)
+
+    @Slot(str, str)
+    def _handle_remote_camera_error(self, camera_id: str, message: str) -> None:
+        self.camera_error.emit(camera_id, message)
 
     @Slot()
     def _process_media_sync_tick(self) -> None:
@@ -246,7 +293,7 @@ class MultiCameraPipelineManager(QObject):
         self._process_packet_group(
             timestamp=frame_set.media_time_s,
             camera_packets=frame_set.camera_packets,
-            missing_cameras=frame_set.missing_cameras,
+            missing_cameras=sorted(set(frame_set.missing_cameras) | set(self._current_missing_cameras())),
             dropped_frames_by_camera=frame_set.dropped_packets_by_camera,
             sync_drift_by_camera=frame_set.drift_by_camera_s,
             session_media_time_s=frame_set.media_time_s,
@@ -438,6 +485,30 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images.pop(camera_id, None)
         if self._running and self._workers:
             return
-        if not self._threads:
-            self.statistics_service.finish_session(time.time())
-            self.stopped.emit()
+        self._finish_stop_if_possible()
+
+    def _start_remote_server(self) -> None:
+        if self._remote_server is not None:
+            self._remote_server.update_project_config(self.project_config)
+            return
+        server = DistributedRuntimeServer(self.project_config)
+        server.camera_packet_received.connect(self._handle_remote_packet)
+        server.preview_frame_received.connect(self._handle_remote_preview_frame)
+        server.camera_status_changed.connect(self._handle_remote_camera_status)
+        server.camera_error.connect(self._handle_remote_camera_error)
+        server.start()
+        self._remote_server = server
+
+    def _current_missing_cameras(self) -> list[str]:
+        missing = set()
+        if self._remote_server is not None:
+            missing.update(self._remote_server.unavailable_camera_ids())
+        return sorted(missing)
+
+    def _finish_stop_if_possible(self) -> None:
+        if self._running:
+            return
+        if self._threads:
+            return
+        self.statistics_service.finish_session(time.time())
+        self.stopped.emit()

@@ -30,13 +30,14 @@ class UltralyticsTrackerAdapter:
         frame_bgr: np.ndarray,
         timestamp: float,
         camera_config: CameraConfig,
+        tracker_config_path: str,
     ) -> list[Detection]:
         model = self._ensure_model()
-        tracker_path = self._resolve_tracker_path(camera_config.tracker_config_path)
+        tracker_path = self._resolve_tracker_path(tracker_config_path)
         results = model.track(
             frame_bgr,
             stream=False,
-            persist=camera_config.tracker_persist,
+            persist=True,
             conf=self.confidence,
             imgsz=self.inference_size,
             augment=self.use_augmentation,

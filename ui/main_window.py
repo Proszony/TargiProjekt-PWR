@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import runtime_defaults as rd
 from core.config import ConfigRepository
 from core.calibration import compute_world_viewport
 from core.camera_overlap import build_camera_overlap_graph
-from core.model_catalog import available_detection_models
 from core.models import (
     AnalyticsSnapshot,
     CameraCoverageOverlay,
@@ -36,6 +36,7 @@ from core.models import (
 from core.multi_camera_runtime import MultiCameraPipelineManager
 from core.statistics_service import StatisticsService
 from ui.camera_grid_view import CameraGridView
+from ui.camera_colors import camera_color
 from ui.camera_manager_dialog import CameraManagerDialog
 from ui.map_view import MapView
 from ui.multi_camera_calibration_dialog import MultiCameraCalibrationDialog
@@ -51,7 +52,6 @@ class MainWindow(QMainWindow):
         self.config_repo = ConfigRepository(project_root)
         self.statistics_service = StatisticsService(project_root)
         self.project_config = self.config_repo.ensure_defaults()
-        self.detector_models = available_detection_models(project_root)
         self.statistics_window = StatisticsWindow(self.statistics_service.repository, self)
         self.runtime_manager: MultiCameraPipelineManager | None = None
         self.camera_frames: dict[str, QImage] = {}
@@ -59,10 +59,10 @@ class MainWindow(QMainWindow):
         self.last_runtime_snapshot = MultiCameraRuntimeSnapshot(timestamp=0.0)
         self._last_error: str | None = None
         self._runtime_presenter = RuntimePresenter(
-            refresh_interval_s=1.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0)
+            refresh_interval_s=1.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0)
         )
         self._telemetry_timer = QTimer(self)
-        self._telemetry_timer.setInterval(int(round(1000.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0))))
+        self._telemetry_timer.setInterval(int(round(1000.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0))))
         self._telemetry_timer.timeout.connect(self._flush_runtime_presentation)
         self._build_ui()
         self._connect_signals()
@@ -173,8 +173,6 @@ class MainWindow(QMainWindow):
         if not isinstance(project_config, ProjectConfig):
             return
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
-        self._runtime_presenter.refresh_interval_s = 1.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0)
-        self._telemetry_timer.setInterval(int(round(1000.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0))))
         self._refresh_from_project()
         if self.runtime_manager is not None:
             self.runtime_manager.update_project_config(self.project_config)
@@ -182,7 +180,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_camera_manager(self) -> None:
-        dialog = CameraManagerDialog(self.project_config.cameras, self.detector_models, self)
+        dialog = CameraManagerDialog(self.project_config.cameras, self)
         dialog.cameras_applied.connect(self._apply_camera_list)
         dialog.exec()
 
@@ -200,7 +198,6 @@ class MainWindow(QMainWindow):
         old_ids = {camera.camera_id for camera in self.project_config.cameras}
         new_ids = {camera.camera_id for camera in normalized}
         self.project_config.cameras = normalized
-        self.detector_models = available_detection_models(self.project_root)
         self._refresh_from_project()
         if self.runtime_manager is not None:
             self.runtime_manager.update_project_config(self.project_config)
@@ -223,7 +220,12 @@ class MainWindow(QMainWindow):
         )
         self._connect_runtime_manager(self.runtime_manager)
         self._set_running(True)
-        self.runtime_manager.start_all()
+        try:
+            self.runtime_manager.start_all()
+        except Exception as exc:
+            self.runtime_manager = None
+            self._set_running(False)
+            QMessageBox.critical(self, "Runtime start failed", str(exc))
 
     @Slot()
     def stop_streams(self) -> None:
@@ -425,8 +427,8 @@ class MainWindow(QMainWindow):
         self._schedule_runtime_presentation(force=True)
 
     def _refresh_from_project(self) -> None:
-        self._runtime_presenter.refresh_interval_s = 1.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0)
-        self._telemetry_timer.setInterval(int(round(1000.0 / max(self.project_config.analytics.live_snapshot_rate_hz, 1.0))))
+        self._runtime_presenter.refresh_interval_s = 1.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0)
+        self._telemetry_timer.setInterval(int(round(1000.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0))))
         self.camera_grid.set_cameras(self.project_config.cameras)
         self.map_view.set_venue_map(self.project_config.venue_map)
         self.map_view.set_world_viewport(self._build_world_viewport())
@@ -462,7 +464,7 @@ class MainWindow(QMainWindow):
             CameraCoverageOverlay(
                 camera_id=camera.camera_id,
                 camera_name=camera.name,
-                color=camera.panel_color,
+                color=camera_color(camera.display_order, camera.camera_id),
                 polygon_world=list(camera.coverage_polygon_world or []),
                 raw_polygon_world=list(camera.coverage_polygon_world_raw or []),
                 calibration_valid=camera.calibration_valid,

@@ -3,11 +3,12 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import av
 from PySide6.QtCore import QObject, Signal, Slot
 
+from core import runtime_defaults as rd
 from core.camera_identity import CameraIdentityEngine
 from core.calibration import recompute_camera_coverage
 from core.coverage_mapping import propose_coverage_polygon_image
@@ -50,9 +51,16 @@ class CameraPipelineWorker(QObject):
         reid_config: ReIDConfig | None = None,
         identity_config: IdentityConfig | None = None,
         file_playback_started_wall_time: float | None = None,
-        model_path: str = "models/yolo26m.pt",
-        confidence: float = 0.25,
-        inference_size: int = 640,
+        model_path: str = rd.DEFAULT_DETECTOR_MODEL_PATH,
+        confidence: float = rd.DEFAULT_DETECTOR_CONFIDENCE,
+        inference_size: int = rd.DEFAULT_DETECTOR_INFERENCE_SIZE,
+        on_frame_ready: Callable[[str, int, object], None] | None = None,
+        on_camera_packet_ready: Callable[[object], None] | None = None,
+        on_status_changed: Callable[[str], None] | None = None,
+        on_error_occurred: Callable[[str], None] | None = None,
+        on_started_listening: Callable[[], None] | None = None,
+        on_stopped_listening: Callable[[], None] | None = None,
+        on_fps_update: Callable[[float], None] | None = None,
     ) -> None:
         super().__init__()
         self._config_lock = threading.Lock()
@@ -70,31 +78,32 @@ class CameraPipelineWorker(QObject):
         self._source_fps: float | None = None
         self._frame_index = 0
         self._dropped_frames = 0
+        self._tracker_config_path = ""
         resolved_model_path = resolve_detector_model_spec(
             self.project_root,
-            camera_config.detector_model_path or model_path,
+            model_path,
         )
         self._detector = YoloPersonDetector(
             resolved_model_path,
             confidence=confidence,
             inference_size=inference_size,
-            use_augmentation=camera_config.detector_use_augmentation,
+            use_augmentation=rd.DEFAULT_DETECTOR_AUGMENTATION,
         )
         self._tracker = SimpleWorldTracker(
-            track_timeout_s=camera_config.track_timeout_s,
-            max_world_distance_m=camera_config.tracker_max_world_distance_m,
-            max_image_distance_px=camera_config.tracker_max_image_distance_px,
-            max_missed_frames=camera_config.tracker_max_missed_frames,
-            min_iou=camera_config.tracker_min_iou,
-            anchor_weight=camera_config.tracker_anchor_weight,
-            iou_weight=camera_config.tracker_iou_weight,
-            confidence_weight=camera_config.tracker_confidence_weight,
+            track_timeout_s=rd.DEFAULT_TRACK_TIMEOUT_S,
+            max_world_distance_m=rd.DEFAULT_TRACKER_MAX_WORLD_DISTANCE_M,
+            max_image_distance_px=rd.DEFAULT_TRACKER_MAX_IMAGE_DISTANCE_PX,
+            max_missed_frames=rd.DEFAULT_TRACKER_MAX_MISSED_FRAMES,
+            min_iou=rd.DEFAULT_TRACKER_MIN_IOU,
+            anchor_weight=rd.DEFAULT_TRACKER_ANCHOR_WEIGHT,
+            iou_weight=rd.DEFAULT_TRACKER_IOU_WEIGHT,
+            confidence_weight=rd.DEFAULT_TRACKER_CONFIDENCE_WEIGHT,
         )
         self._tracker_adapter = UltralyticsTrackerAdapter(
             resolved_model_path,
             confidence=confidence,
             inference_size=inference_size,
-            use_augmentation=camera_config.detector_use_augmentation,
+            use_augmentation=rd.DEFAULT_DETECTOR_AUGMENTATION,
         )
         self._reid_manager = ReIDManager(self.reid_config, self.project_root)
         self._camera_identity = CameraIdentityEngine(
@@ -102,13 +111,20 @@ class CameraPipelineWorker(QObject):
             self.identity_config,
             self.reid_config,
         )
+        self._on_frame_ready = on_frame_ready
+        self._on_camera_packet_ready = on_camera_packet_ready
+        self._on_status_changed = on_status_changed
+        self._on_error_occurred = on_error_occurred
+        self._on_started_listening = on_started_listening
+        self._on_stopped_listening = on_stopped_listening
+        self._on_fps_update = on_fps_update
         self._detection_enabled = True
         self._runtime_tracker_signature: tuple[object, ...] | None = None
 
     @Slot()
     def run(self) -> None:
         self._running = True
-        self.started_listening.emit()
+        self._publish_started_listening()
         smoothed_fps = 0.0
         last_frame_t = time.perf_counter()
         last_snapshot_persisted_at = 0.0
@@ -119,7 +135,7 @@ class CameraPipelineWorker(QObject):
                     camera_config = CameraConfig.from_dict(self.camera_config.to_dict())
                 self._container = self._open_source(camera_config)
                 self._prepare_source_timing()
-                self.status_changed.emit(f"Connected: {self._source_label(camera_config)}")
+                self._publish_status_changed(f"Connected: {self._source_label(camera_config)}")
 
                 for frame in self._container.decode(video=0):
                     if not self._running:
@@ -129,7 +145,7 @@ class CameraPipelineWorker(QObject):
                     delta = max(now - last_frame_t, 1e-6)
                     last_frame_t = now
                     smoothed_fps = 0.1 * (1.0 / delta) + 0.9 * smoothed_fps
-                    self.fps_update.emit(smoothed_fps)
+                    self._publish_fps_update(smoothed_fps)
 
                     wall_time_s = time.time()
                     media_time_s = (
@@ -151,39 +167,34 @@ class CameraPipelineWorker(QObject):
                     with self._config_lock:
                         camera_config = CameraConfig.from_dict(self.camera_config.to_dict())
                         venue_map = VenueMapConfig.from_dict(self.venue_map.to_dict())
-                        if camera_config.source_type == "udp":
-                            camera_config.udp_url = camera_config.source_value
-                        camera_config.tracker_config_path = self._materialize_tracker_config(camera_config)
-                        resolved_model_spec = resolve_detector_model_spec(
-                            self.project_root,
-                            camera_config.detector_model_path,
-                        )
+                        self._tracker_config_path = self._materialize_tracker_config(camera_config)
+                        resolved_model_spec = resolve_detector_model_spec(self.project_root, rd.DEFAULT_DETECTOR_MODEL_PATH)
                         self._detector.set_model_path(resolved_model_spec)
-                        self._detector.use_augmentation = camera_config.detector_use_augmentation
+                        self._detector.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
                         self._tracker_adapter.set_model_path(resolved_model_spec)
-                        self._tracker_adapter.use_augmentation = camera_config.detector_use_augmentation
+                        self._tracker_adapter.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
                         self._tracker_adapter.confidence = self._detector.confidence
                         self._tracker_adapter.inference_size = self._detector.inference_size
-                        self._tracker.track_timeout_s = camera_config.track_timeout_s
-                        self._tracker.max_world_distance_m = camera_config.tracker_max_world_distance_m
-                        self._tracker.max_image_distance_px = camera_config.tracker_max_image_distance_px
-                        self._tracker.max_missed_frames = camera_config.tracker_max_missed_frames
-                        self._tracker.min_iou = camera_config.tracker_min_iou
-                        self._tracker.anchor_weight = camera_config.tracker_anchor_weight
-                        self._tracker.iou_weight = camera_config.tracker_iou_weight
-                        self._tracker.confidence_weight = camera_config.tracker_confidence_weight
+                        self._tracker.track_timeout_s = rd.DEFAULT_TRACK_TIMEOUT_S
+                        self._tracker.max_world_distance_m = rd.DEFAULT_TRACKER_MAX_WORLD_DISTANCE_M
+                        self._tracker.max_image_distance_px = rd.DEFAULT_TRACKER_MAX_IMAGE_DISTANCE_PX
+                        self._tracker.max_missed_frames = rd.DEFAULT_TRACKER_MAX_MISSED_FRAMES
+                        self._tracker.min_iou = rd.DEFAULT_TRACKER_MIN_IOU
+                        self._tracker.anchor_weight = rd.DEFAULT_TRACKER_ANCHOR_WEIGHT
+                        self._tracker.iou_weight = rd.DEFAULT_TRACKER_IOU_WEIGHT
+                        self._tracker.confidence_weight = rd.DEFAULT_TRACKER_CONFIDENCE_WEIGHT
                         self._camera_identity.identity_config = self.identity_config
                         self._camera_identity.reid_config = self.reid_config
 
                     local_tracks: dict[int, LocalTrack] = {}
                     expired_tracks: list[LocalTrack] = []
                     if self._detection_enabled:
-                        if camera_config.tracker_backend in {"botsort", "bytetrack"}:
-                            detections = self._tracker_adapter.track(frame_bgr, timestamp, camera_config)
-                        else:
-                            raise ValueError(
-                                f"Unsupported tracker backend '{camera_config.tracker_backend}'. Use botsort or bytetrack."
-                            )
+                        detections = self._tracker_adapter.track(
+                            frame_bgr,
+                            timestamp,
+                            camera_config,
+                            self._tracker_config_path,
+                        )
                         local_tracks, expired_tracks = self._tracker.update(
                             camera_id=camera_config.camera_id,
                             timestamp=timestamp,
@@ -220,12 +231,12 @@ class CameraPipelineWorker(QObject):
                         render_timestamp=timestamp,
                     )
                     processing_latency_s = time.perf_counter() - processing_started_at
-                    self.frame_ready.emit(
+                    self._publish_frame_ready(
                         camera_config.camera_id,
                         self._frame_index,
                         qimage_from_bgr(annotated),
                     )
-                    self.camera_packet_ready.emit(
+                    self._publish_camera_packet_ready(
                         CameraTrackingPacket(
                             camera_id=camera_config.camera_id,
                             timestamp=timestamp,
@@ -275,20 +286,17 @@ class CameraPipelineWorker(QObject):
                     if camera_config.loop_file:
                         self._frame_index = 0
                         self._dropped_frames = 0
-                        self.status_changed.emit("Reached end of file, restarting...")
+                        self._publish_status_changed("Reached end of file, restarting...")
                         continue
-                    self.status_changed.emit("Playback finished")
+                    self._publish_status_changed("Playback finished")
                     self._running = False
                     break
-                self.status_changed.emit("Stream lost, reconnecting...")
+                self._publish_status_changed("Stream lost, reconnecting...")
             except Exception as exc:
                 if not self._running:
                     break
-                self.status_changed.emit("Error opening or decoding stream; retrying...")
-                tracker_backend = getattr(camera_config, "tracker_backend", "unknown")
-                self.error_occurred.emit(
-                    f"{exc} (tracker={tracker_backend}; switch to ByteTrack if BoT-SORT fails on this setup)"
-                )
+                self._publish_status_changed("Error opening or decoding stream; retrying...")
+                self._publish_error_occurred(str(exc))
             finally:
                 if self._container is not None:
                     try:
@@ -300,8 +308,8 @@ class CameraPipelineWorker(QObject):
             if self._running:
                 time.sleep(0.5 if camera_config.source_type == "file" else 1.0)
 
-        self.status_changed.emit("Stopped")
-        self.stopped_listening.emit()
+        self._publish_status_changed("Stopped")
+        self._publish_stopped_listening()
 
     @Slot()
     def stop(self) -> None:
@@ -376,13 +384,13 @@ class CameraPipelineWorker(QObject):
         camera_config.calibration_valid = bool(camera_config.homography_image_to_world) and coverage_result.is_valid
 
     def set_detector_model_path(self, model_path: str) -> None:
-        resolved = resolve_detector_model_spec(self.project_root, model_path)
+        resolved = resolve_detector_model_spec(self.project_root, rd.DEFAULT_DETECTOR_MODEL_PATH)
         self._detector.set_model_path(resolved)
         self._tracker_adapter.set_model_path(resolved)
 
     def set_detector_augmentation(self, enabled: bool) -> None:
-        self._detector.use_augmentation = enabled
-        self._tracker_adapter.use_augmentation = enabled
+        self._detector.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
+        self._tracker_adapter.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
 
     def _open_source(self, camera_config: CameraConfig) -> av.container.InputContainer:
         self._source_fps = None
@@ -393,13 +401,47 @@ class CameraPipelineWorker(QObject):
             if not source_path.is_absolute():
                 source_path = (self.project_root / source_path).resolve()
             return av.open(str(source_path))
-        camera_config.udp_url = camera_config.source_value
-        self.status_changed.emit(f"Listening on {camera_config.source_value}")
+        self._publish_status_changed(f"Listening on {camera_config.source_value}")
         return av.open(
             camera_config.source_value,
             options=STREAM_OPTIONS,
             timeout=(STREAM_OPEN_TIMEOUT_S, STREAM_READ_TIMEOUT_S),
         )
+
+    def _publish_frame_ready(self, camera_id: str, frame_index: int, image: object) -> None:
+        self.frame_ready.emit(camera_id, frame_index, image)
+        if self._on_frame_ready is not None:
+            self._on_frame_ready(camera_id, frame_index, image)
+
+    def _publish_camera_packet_ready(self, packet: object) -> None:
+        self.camera_packet_ready.emit(packet)
+        if self._on_camera_packet_ready is not None:
+            self._on_camera_packet_ready(packet)
+
+    def _publish_status_changed(self, status_text: str) -> None:
+        self.status_changed.emit(status_text)
+        if self._on_status_changed is not None:
+            self._on_status_changed(status_text)
+
+    def _publish_error_occurred(self, message: str) -> None:
+        self.error_occurred.emit(message)
+        if self._on_error_occurred is not None:
+            self._on_error_occurred(message)
+
+    def _publish_started_listening(self) -> None:
+        self.started_listening.emit()
+        if self._on_started_listening is not None:
+            self._on_started_listening()
+
+    def _publish_stopped_listening(self) -> None:
+        self.stopped_listening.emit()
+        if self._on_stopped_listening is not None:
+            self._on_stopped_listening()
+
+    def _publish_fps_update(self, fps: float) -> None:
+        self.fps_update.emit(fps)
+        if self._on_fps_update is not None:
+            self._on_fps_update(fps)
 
     @staticmethod
     def _source_label(camera_config: CameraConfig) -> str:
@@ -420,61 +462,45 @@ class CameraPipelineWorker(QObject):
         )
 
     def _should_skip_file_frame(self, media_time_s: float | None) -> bool:
-        if (
-            not self.playback_sync_config.enabled_for_file_sources
-            or media_time_s is None
-            or self.file_playback_started_wall_time is None
-        ):
-            return False
-        target_media_time_s = max(time.perf_counter() - self.file_playback_started_wall_time, 0.0)
-        return media_time_s < target_media_time_s - self.playback_sync_config.late_frame_drop_threshold_s
+        return False
 
     def _pace_file_frame(self, media_time_s: float | None) -> None:
-        if (
-            self.session_sync_mode != "all_file_strict"
-            or media_time_s is None
-            or self.file_playback_started_wall_time is None
-        ):
-            return
-        lead_s = media_time_s - max(time.perf_counter() - self.file_playback_started_wall_time, 0.0)
-        if lead_s <= self.playback_sync_config.sync_tolerance_s:
-            return
-        time.sleep(max(lead_s - self.playback_sync_config.sync_tolerance_s, 0.0))
+        return
 
     def _materialize_tracker_config(self, camera_config: CameraConfig) -> str:
         signature = (
-            camera_config.tracker_backend,
-            camera_config.tracker_reid_enabled,
-            camera_config.tracker_track_buffer,
-            camera_config.tracker_match_thresh,
-            camera_config.tracker_new_track_thresh,
-            camera_config.tracker_proximity_thresh,
-            camera_config.tracker_appearance_thresh,
+            rd.DEFAULT_TRACKER_BACKEND,
+            rd.DEFAULT_TRACKER_REID_ENABLED,
+            rd.DEFAULT_TRACKER_TRACK_BUFFER,
+            rd.DEFAULT_TRACKER_MATCH_THRESH,
+            rd.DEFAULT_TRACKER_NEW_TRACK_THRESH,
+            rd.DEFAULT_TRACKER_PROXIMITY_THRESH,
+            rd.DEFAULT_TRACKER_APPEARANCE_THRESH,
             round(self._tracker_adapter.confidence, 4),
         )
         runtime_dir = Path.cwd() / "data" / "runtime_trackers"
         runtime_dir.mkdir(parents=True, exist_ok=True)
-        runtime_path = runtime_dir / f"{camera_config.camera_id}_{camera_config.tracker_backend}.yaml"
+        runtime_path = runtime_dir / f"{camera_config.camera_id}_{rd.DEFAULT_TRACKER_BACKEND}.yaml"
         if signature == self._runtime_tracker_signature and runtime_path.exists():
             return str(runtime_path)
 
-        backend = camera_config.tracker_backend if camera_config.tracker_backend in {"botsort", "bytetrack"} else "botsort"
+        backend = rd.DEFAULT_TRACKER_BACKEND
         lines = [
             f"tracker_type: {backend}",
             f"track_high_thresh: {max(self._tracker_adapter.confidence, 0.1):.3f}",
             "track_low_thresh: 0.05",
-            f"new_track_thresh: {camera_config.tracker_new_track_thresh:.3f}",
-            f"track_buffer: {camera_config.tracker_track_buffer}",
-            f"match_thresh: {camera_config.tracker_match_thresh:.3f}",
+            f"new_track_thresh: {rd.DEFAULT_TRACKER_NEW_TRACK_THRESH:.3f}",
+            f"track_buffer: {rd.DEFAULT_TRACKER_TRACK_BUFFER}",
+            f"match_thresh: {rd.DEFAULT_TRACKER_MATCH_THRESH:.3f}",
             "fuse_score: True",
         ]
         if backend == "botsort":
             lines.extend(
                 [
                     "gmc_method: sparseOptFlow",
-                    f"proximity_thresh: {camera_config.tracker_proximity_thresh:.3f}",
-                    f"appearance_thresh: {camera_config.tracker_appearance_thresh:.3f}",
-                    f"with_reid: {'True' if camera_config.tracker_reid_enabled else 'False'}",
+                    f"proximity_thresh: {rd.DEFAULT_TRACKER_PROXIMITY_THRESH:.3f}",
+                    f"appearance_thresh: {rd.DEFAULT_TRACKER_APPEARANCE_THRESH:.3f}",
+                    f"with_reid: {'True' if rd.DEFAULT_TRACKER_REID_ENABLED else 'False'}",
                     "model: auto",
                 ]
             )

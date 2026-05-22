@@ -80,7 +80,7 @@ class ReIDManager:
         return observations
 
     def _qualifies(self, track: LocalTrack, camera_config: CameraConfig) -> bool:
-        if not camera_config.reid_enabled:
+        if not self.config.enabled:
             return False
         min_confidence = min(self.config.min_confidence, self.config.overlap_reid_min_confidence)
         if track.confidence < min_confidence:
