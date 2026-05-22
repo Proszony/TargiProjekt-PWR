@@ -438,11 +438,6 @@ class MainWindow(QMainWindow):
         self._runtime_presenter.refresh_interval_s = 1.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0)
         self._telemetry_timer.setInterval(int(round(1000.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0))))
         self.camera_grid.set_cameras(self.project_config.cameras)
-        enabled_count = sum(1 for camera in self.project_config.cameras if camera.enabled)
-        if enabled_count == 1:
-            self.splitter.setSizes([1400, 600])
-        else:
-            self.splitter.setSizes([900, 1100])
         self.map_view.set_venue_map(self.project_config.venue_map)
         self.map_view.set_world_viewport(self._build_world_viewport())
         self.map_view.set_snapshot(self.last_snapshot)

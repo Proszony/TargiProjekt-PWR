@@ -47,6 +47,21 @@ class CameraGridLayoutTests(unittest.TestCase):
         self.assertEqual(grid.layout().rowStretch(0), 1)
         self.assertEqual(grid.layout().columnStretch(0), 1)
 
+    def test_transition_from_two_cameras_to_one_clears_old_row_stretch(self) -> None:
+        grid = CameraGridView()
+        grid.set_cameras(
+            [
+                CameraConfig(camera_id="camera-1", enabled=True, display_order=0),
+                CameraConfig(camera_id="camera-2", enabled=True, display_order=1),
+            ]
+        )
+        grid.set_cameras([CameraConfig(camera_id="camera-1", enabled=True, display_order=0)])
+
+        self.assertEqual(len(grid._panels), 1)
+        self.assertEqual(grid.layout().rowStretch(0), 1)
+        self.assertEqual(grid.layout().rowStretch(1), 0)
+        self.assertEqual(grid.layout().columnStretch(0), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

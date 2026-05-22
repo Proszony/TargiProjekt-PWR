@@ -98,6 +98,8 @@ class CameraGridView(QWidget):
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(8)
+        self._last_row_count = 0
+        self._last_column_count = 0
 
     def set_cameras(self, cameras: list[CameraConfig]) -> None:
         states: dict[str, CameraPanelState] = {}
@@ -169,6 +171,12 @@ class CameraGridView(QWidget):
         panel.refresh()
 
     def _rebuild_grid(self) -> None:
+        for row in range(max(self._last_row_count, self._layout.rowCount())):
+            self._layout.setRowStretch(row, 0)
+            self._layout.setRowMinimumHeight(row, 0)
+        for column in range(max(self._last_column_count, self._layout.columnCount())):
+            self._layout.setColumnStretch(column, 0)
+            self._layout.setColumnMinimumWidth(column, 0)
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget()
@@ -184,6 +192,8 @@ class CameraGridView(QWidget):
             self._layout.setRowStretch(0, 1)
             self._layout.setColumnStretch(0, 1)
             self._panels[ordered_states[0].camera_id] = panel
+            self._last_row_count = 1
+            self._last_column_count = 1
             return
         columns = self._grid_columns_for_count(len(ordered_states))
         for index, state in enumerate(ordered_states):
@@ -198,6 +208,8 @@ class CameraGridView(QWidget):
             self._layout.setRowStretch(row, 1)
         for column in range(columns):
             self._layout.setColumnStretch(column, 1)
+        self._last_row_count = rows
+        self._last_column_count = columns
 
     @staticmethod
     def _grid_columns_for_count(count: int) -> int:
