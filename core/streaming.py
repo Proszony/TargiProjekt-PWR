@@ -81,7 +81,7 @@ class CameraPipelineWorker(QObject):
         self._tracker_config_path = ""
         resolved_model_path = resolve_detector_model_spec(
             self.project_root,
-            model_path,
+            camera_config.detector_model_path or model_path,
         )
         self._detector = YoloPersonDetector(
             resolved_model_path,
@@ -168,7 +168,10 @@ class CameraPipelineWorker(QObject):
                         camera_config = CameraConfig.from_dict(self.camera_config.to_dict())
                         venue_map = VenueMapConfig.from_dict(self.venue_map.to_dict())
                         self._tracker_config_path = self._materialize_tracker_config(camera_config)
-                        resolved_model_spec = resolve_detector_model_spec(self.project_root, rd.DEFAULT_DETECTOR_MODEL_PATH)
+                        resolved_model_spec = resolve_detector_model_spec(
+                            self.project_root,
+                            camera_config.detector_model_path or rd.DEFAULT_DETECTOR_MODEL_PATH,
+                        )
                         self._detector.set_model_path(resolved_model_spec)
                         self._detector.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
                         self._tracker_adapter.set_model_path(resolved_model_spec)
@@ -384,7 +387,7 @@ class CameraPipelineWorker(QObject):
         camera_config.calibration_valid = bool(camera_config.homography_image_to_world) and coverage_result.is_valid
 
     def set_detector_model_path(self, model_path: str) -> None:
-        resolved = resolve_detector_model_spec(self.project_root, rd.DEFAULT_DETECTOR_MODEL_PATH)
+        resolved = resolve_detector_model_spec(self.project_root, model_path or rd.DEFAULT_DETECTOR_MODEL_PATH)
         self._detector.set_model_path(resolved)
         self._tracker_adapter.set_model_path(resolved)
 

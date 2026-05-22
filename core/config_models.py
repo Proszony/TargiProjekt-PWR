@@ -781,6 +781,7 @@ class CameraConfig:
             "loop_file": self.loop_file,
             "runtime_mode": self.runtime_mode,
             "enabled": self.enabled,
+            "detector_model_path": self.detector_model_path,
         }
         if self.remote_worker_id:
             payload["remote_worker_id"] = self.remote_worker_id

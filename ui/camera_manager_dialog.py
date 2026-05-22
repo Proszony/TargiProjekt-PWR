@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.camera_overlap import build_camera_overlap_graph
+from core.model_catalog import available_detection_models
 from core.models import CameraConfig, OverlapDedupConfig
 
 
@@ -32,6 +33,7 @@ class CameraEditorDialog(QDialog):
         self,
         camera_config: CameraConfig,
         all_camera_ids: list[str],
+        detector_models: list[tuple[str, str]],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -39,6 +41,7 @@ class CameraEditorDialog(QDialog):
         self.resize(680, 460)
         self._camera = CameraConfig.from_dict(camera_config.to_dict())
         self._all_camera_ids = [camera_id for camera_id in all_camera_ids if camera_id != self._camera.camera_id]
+        self._detector_models = list(detector_models)
         self._build_ui()
         self._load_values()
         self._update_source_controls()
@@ -68,6 +71,9 @@ class CameraEditorDialog(QDialog):
         self.source_value_input = QLineEdit()
         self.browse_source_button = QPushButton("Browse...")
         self.loop_file_checkbox = QCheckBox("Loop playback")
+        self.detector_model_combo = QComboBox()
+        for label, model_path in self._detector_models:
+            self.detector_model_combo.addItem(label, model_path)
 
         self.overlap_checks: dict[str, QCheckBox] = {}
         overlap_widget = QWidget()
@@ -94,6 +100,7 @@ class CameraEditorDialog(QDialog):
         form.addRow("Source type", self.source_type_combo)
         form.addRow("Source", source_row)
         form.addRow("", self.loop_file_checkbox)
+        form.addRow("Detector model", self.detector_model_combo)
         form.addRow("Overlap cameras", overlap_widget)
 
         helper = QLabel(
@@ -123,6 +130,9 @@ class CameraEditorDialog(QDialog):
         self.source_type_combo.setCurrentIndex(0 if self._camera.source_type == "udp" else 1)
         self.source_value_input.setText(self._camera.source_value)
         self.loop_file_checkbox.setChecked(self._camera.loop_file)
+        detector_index = self.detector_model_combo.findData(self._camera.detector_model_path)
+        if detector_index >= 0:
+            self.detector_model_combo.setCurrentIndex(detector_index)
         for camera_id, checkbox in self.overlap_checks.items():
             checkbox.setChecked(camera_id in self._camera.overlap_camera_ids)
 
@@ -171,6 +181,7 @@ class CameraEditorDialog(QDialog):
         self._camera.remote_worker_id = (
             self.remote_worker_id_input.text().strip() if self._camera.runtime_mode == "remote" else ""
         )
+        self._camera.detector_model_path = str(self.detector_model_combo.currentData())
         self._camera.source_type = str(self.source_type_combo.currentData())
         self._camera.source_value = source_value
         self._camera.loop_file = self.loop_file_checkbox.isChecked() if self._camera.source_type == "file" else False
@@ -186,12 +197,14 @@ class CameraManagerDialog(QDialog):
     def __init__(
         self,
         cameras: list[CameraConfig],
+        project_root: Path,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Manage cameras")
         self.resize(820, 520)
         self._cameras = [CameraConfig.from_dict(camera.to_dict()) for camera in cameras]
+        self._detector_models = available_detection_models(project_root)
         self._build_ui()
         self._refresh_list()
 
@@ -276,7 +289,7 @@ class CameraManagerDialog(QDialog):
             name=f"Camera {next_index}",
             display_order=next_index - 1,
         )
-        dialog = CameraEditorDialog(camera, [item.camera_id for item in self._cameras], self)
+        dialog = CameraEditorDialog(camera, [item.camera_id for item in self._cameras], self._detector_models, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self._cameras.append(dialog.camera_config)
@@ -289,7 +302,7 @@ class CameraManagerDialog(QDialog):
             return
         current_id = self._cameras[index].camera_id
         other_ids = [item.camera_id for item in self._cameras if item.camera_id != current_id]
-        dialog = CameraEditorDialog(self._cameras[index], other_ids, self)
+        dialog = CameraEditorDialog(self._cameras[index], other_ids, self._detector_models, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         updated = dialog.camera_config

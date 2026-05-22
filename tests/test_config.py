@@ -21,7 +21,7 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(config.runtime_mode, "local")
         self.assertEqual(config.remote_worker_id, "")
 
-    def test_camera_persisted_schema_contains_only_product_fields(self) -> None:
+    def test_camera_persisted_schema_contains_operational_fields_only(self) -> None:
         camera = CameraConfig.from_dict(
             {
                 "camera_id": "camera-1",
@@ -43,7 +43,7 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(dumped["source_type"], "file")
         self.assertEqual(dumped["remote_worker_id"], "edge-1")
         self.assertEqual(dumped["overlap_camera_ids"], ["camera-2"])
-        self.assertNotIn("detector_model_path", dumped)
+        self.assertEqual(dumped["detector_model_path"], "models/custom.pt")
         self.assertNotIn("tracker_backend", dumped)
         self.assertNotIn("coverage_polygon_world", dumped)
 

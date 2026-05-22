@@ -24,6 +24,7 @@ from core import runtime_defaults as rd
 from core.config import ConfigRepository
 from core.calibration import compute_world_viewport
 from core.camera_overlap import build_camera_overlap_graph
+from core.model_catalog import available_detection_models
 from core.models import (
     AnalyticsSnapshot,
     CameraCoverageOverlay,
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         self.config_repo = ConfigRepository(project_root)
         self.statistics_service = StatisticsService(project_root)
         self.project_config = self.config_repo.ensure_defaults()
+        self.detector_models = available_detection_models(project_root)
         self.statistics_window = StatisticsWindow(self.statistics_service.repository, self)
         self.runtime_manager: MultiCameraPipelineManager | None = None
         self.camera_frames: dict[str, QImage] = {}
@@ -180,7 +182,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_camera_manager(self) -> None:
-        dialog = CameraManagerDialog(self.project_config.cameras, self)
+        self.detector_models = available_detection_models(self.project_root)
+        dialog = CameraManagerDialog(self.project_config.cameras, self.project_root, self)
         dialog.cameras_applied.connect(self._apply_camera_list)
         dialog.exec()
 
