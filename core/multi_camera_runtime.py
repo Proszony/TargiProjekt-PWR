@@ -68,6 +68,7 @@ class MultiCameraPipelineManager(QObject):
         self._sync_timer.timeout.connect(self._process_media_sync_tick)
         self._media_synchronizer: MultiCameraMediaSynchronizer | None = None
         self._session_sync_mode = "all_live_unsynced"
+        self._session_started_at_unix_s: float | None = None
         self._file_playback_started_wall_time: float | None = None
         self._remote_server: DistributedRuntimeServer | None = None
 
@@ -154,6 +155,7 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images.clear()
         self._latest_remote_preview_images.clear()
         self._latest_remote_labels_by_camera.clear()
+        self._session_started_at_unix_s = time.time()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
         remote_cameras = [camera for camera in active_cameras if camera.runtime_mode == "remote"]
@@ -164,7 +166,8 @@ class MultiCameraPipelineManager(QObject):
             self.project_config.playback_sync.enabled_for_file_sources,
         )
         self._file_playback_started_wall_time = self.worker_file_playback_started_wall_time(
-            self._session_sync_mode
+            self._session_sync_mode,
+            self._session_started_at_unix_s,
         )
         self._media_synchronizer = None
         if active_cameras:
@@ -194,14 +197,19 @@ class MultiCameraPipelineManager(QObject):
         for camera in remote_cameras:
             self.camera_status_changed.emit(camera.camera_id, "waiting for worker")
         if self._remote_server is not None:
-            self._remote_server.start_session(self._session_sync_mode)
+            self._remote_server.start_session(self._session_sync_mode, self._session_started_at_unix_s)
         self.started.emit()
 
     @staticmethod
-    def worker_file_playback_started_wall_time(session_sync_mode: str) -> float | None:
+    def worker_file_playback_started_wall_time(
+        session_sync_mode: str,
+        session_started_at_unix_s: float | None = None,
+    ) -> float | None:
         if not (session_sync_mode.startswith("all_file") or session_sync_mode == "single_file_realtime"):
             return None
-        return time.perf_counter()
+        if session_started_at_unix_s is None:
+            return time.perf_counter()
+        return time.perf_counter() + (session_started_at_unix_s - time.time())
 
     def stop_all(self) -> None:
         if not self._running:

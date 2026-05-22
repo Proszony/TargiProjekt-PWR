@@ -59,6 +59,7 @@ class DistributedRuntimeServer(QObject):
         self._running = False
         self._session_active = False
         self._session_sync_mode = "all_live_unsynced"
+        self._session_started_at_unix_s: float | None = None
 
     def update_project_config(self, project_config: ProjectConfig) -> None:
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
@@ -102,9 +103,10 @@ class DistributedRuntimeServer(QObject):
         for connection in connections:
             self._close_socket(connection.sock)
 
-    def start_session(self, session_sync_mode: str) -> None:
+    def start_session(self, session_sync_mode: str, session_started_at_unix_s: float | None = None) -> None:
         self._session_active = True
         self._session_sync_mode = session_sync_mode
+        self._session_started_at_unix_s = session_started_at_unix_s
         with self._lock:
             connections = list(self._connections_by_camera.values())
         for connection in connections:
@@ -113,12 +115,14 @@ class DistributedRuntimeServer(QObject):
                 {
                     "type": MESSAGE_START_SESSION,
                     "session_sync_mode": session_sync_mode,
+                    "session_started_at_unix_s": session_started_at_unix_s,
                     "playback_sync": self.project_config.playback_sync.to_dict(),
                 },
             )
 
     def stop_session(self) -> None:
         self._session_active = False
+        self._session_started_at_unix_s = None
         with self._lock:
             connections = list(self._connections_by_camera.values())
         for connection in connections:
@@ -283,6 +287,7 @@ class DistributedRuntimeServer(QObject):
                 {
                     "type": MESSAGE_START_SESSION,
                     "session_sync_mode": self._session_sync_mode,
+                    "session_started_at_unix_s": self._session_started_at_unix_s,
                     "playback_sync": self.project_config.playback_sync.to_dict(),
                 },
             )

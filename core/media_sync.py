@@ -108,17 +108,16 @@ class MultiCameraMediaSynchronizer:
         return max(earliest_media_times)
 
     def _resolve_target_media_time_s(self, current_time: float) -> float | None:
-        available_media_times: list[float] = []
         for camera_id in self.camera_ids:
             latest_available = self._latest_available_media_time(camera_id)
             if latest_available is None:
                 return None
-            available_media_times.append(latest_available)
-        if not available_media_times:
-            return None
+        startup_media_time_s = self._startup_media_time_s or 0.0
+        elapsed_s = current_time - self._playback_started_wall_time
+        target_media_time_s = startup_media_time_s + max(elapsed_s, 0.0)
         if self._last_target_media_time_s < 0.0:
-            return min(available_media_times)
-        return max(self._last_target_media_time_s, min(available_media_times))
+            return startup_media_time_s
+        return max(self._last_target_media_time_s, target_media_time_s)
 
     def _latest_available_media_time(self, camera_id: str) -> float | None:
         latest_selected = self._selected_packets.get(camera_id)

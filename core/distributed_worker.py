@@ -53,6 +53,7 @@ class DistributedCameraWorker:
         self._socket_lock = threading.Lock()
         self._connected = False
         self._session_sync_mode = "all_live_unsynced"
+        self._session_started_at_unix_s: float | None = None
         self._playback_sync = PlaybackSyncConfig.from_dict(self.project_config.playback_sync.to_dict())
         self._pipeline_worker: CameraPipelineWorker | None = None
         self._pipeline_thread: threading.Thread | None = None
@@ -135,12 +136,17 @@ class DistributedCameraWorker:
         message_type = str(message.get("type", ""))
         if message_type == MESSAGE_START_SESSION:
             self._session_sync_mode = str(message.get("session_sync_mode", "all_live_unsynced"))
+            session_started_at = message.get("session_started_at_unix_s")
+            self._session_started_at_unix_s = (
+                float(session_started_at) if isinstance(session_started_at, (int, float)) else None
+            )
             playback_sync = message.get("playback_sync", {})
             if isinstance(playback_sync, dict):
                 self._playback_sync = PlaybackSyncConfig.from_dict(playback_sync)
             self._start_pipeline()
             return
         if message_type == MESSAGE_STOP_SESSION:
+            self._session_started_at_unix_s = None
             self._stop_pipeline()
             return
         if message_type == MESSAGE_ERROR:
@@ -149,11 +155,7 @@ class DistributedCameraWorker:
     def _start_pipeline(self) -> None:
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
             return
-        file_playback_started_wall_time = (
-            time.perf_counter()
-            if (self._session_sync_mode.startswith("all_file") or self._session_sync_mode == "single_file_realtime")
-            else None
-        )
+        file_playback_started_wall_time = self._file_playback_started_wall_time()
         worker = CameraPipelineWorker(
             camera_config=CameraConfig.from_dict(self.camera_config.to_dict()),
             venue_map=self.project_config.venue_map,
@@ -184,6 +186,13 @@ class DistributedCameraWorker:
             thread.join(timeout=3.0)
         self._pipeline_worker = None
         self._pipeline_thread = None
+
+    def _file_playback_started_wall_time(self) -> float | None:
+        if not (self._session_sync_mode.startswith("all_file") or self._session_sync_mode == "single_file_realtime"):
+            return None
+        if self._session_started_at_unix_s is None:
+            return time.perf_counter()
+        return time.perf_counter() + (self._session_started_at_unix_s - time.time())
 
     def _handle_frame_ready(self, camera_id: str, frame_index: int, image: object) -> None:
         if not self._connected or not isinstance(image, QImage):
