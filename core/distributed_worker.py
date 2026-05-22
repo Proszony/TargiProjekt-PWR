@@ -5,9 +5,10 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
 from PySide6.QtGui import QImage
 
+from core import runtime_defaults as rd
 from core.config import ConfigRepository
 from core.distributed_protocol import (
     MESSAGE_CAMERA_PACKET,
@@ -272,12 +273,18 @@ class DistributedCameraWorker:
         raise ValueError(f"Camera '{self.camera_id}' not found in project config.")
 
     def _encode_jpeg(self, image: QImage) -> bytes:
+        encoded_image = image
+        if image.width() > rd.DEFAULT_DISTRIBUTED_PREVIEW_MAX_WIDTH:
+            encoded_image = image.scaledToWidth(
+                rd.DEFAULT_DISTRIBUTED_PREVIEW_MAX_WIDTH,
+                Qt.SmoothTransformation,
+            )
         buffer = QByteArray()
         handle = QBuffer(buffer)
         if not handle.open(QIODevice.WriteOnly):
             return b""
         quality = self.project_config.distributed_runtime.preview_jpeg_quality
-        image.save(handle, "JPEG", quality)
+        encoded_image.save(handle, "JPEG", quality)
         handle.close()
         return bytes(buffer)
 

@@ -50,6 +50,8 @@ class MultiCameraPipelineManager(QObject):
         self._threads: dict[str, QThread] = {}
         self._packets: dict[str, CameraTrackingPacket] = {}
         self._frame_images: dict[str, dict[int, object]] = {}
+        self._latest_remote_preview_images: dict[str, QImage] = {}
+        self._latest_remote_labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
         self._expired_buffer: list[CameraIdentityTrack] = []
         self._overlap_dedup = OverlapDedupEngine(
             project_config.overlap_dedup,
@@ -104,6 +106,8 @@ class MultiCameraPipelineManager(QObject):
         self._analytics.reset()
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
+        self._latest_remote_preview_images.clear()
+        self._latest_remote_labels_by_camera.clear()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
         remote_cameras = [camera for camera in active_cameras if camera.runtime_mode == "remote"]
@@ -232,6 +236,7 @@ class MultiCameraPipelineManager(QObject):
         if not isinstance(packet, CameraTrackingPacket):
             return
         self._packets[packet.camera_id] = packet
+        self.camera_fps_changed.emit(packet.camera_id, packet.fps)
         if self._session_sync_mode == "all_file_strict" and self._media_synchronizer is not None:
             self._media_synchronizer.add_packet(packet)
             return
@@ -266,7 +271,9 @@ class MultiCameraPipelineManager(QObject):
         image = QImage.fromData(bytes(jpeg_bytes), "JPEG")
         if image.isNull():
             return
-        self._handle_camera_frame(camera_id, frame_index, image)
+        self._latest_remote_preview_images[camera_id] = image
+        labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
+        self.camera_frame_ready.emit(camera_id, labeled)
 
     @Slot(str, str)
     def _handle_remote_camera_status(self, camera_id: str, status_text: str) -> None:
@@ -352,6 +359,16 @@ class MultiCameraPipelineManager(QObject):
         )
         self._expired_buffer.clear()
         analytics_snapshot = self._analytics.update(timestamp, map_presences)
+        labels_by_camera = self._build_operator_labels(camera_packets, map_presences)
+        camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
+        self._latest_remote_labels_by_camera = {
+            camera_id: list(labels_by_camera.get(camera_id, []))
+            for camera_id, camera in camera_lookup.items()
+            if camera.runtime_mode == "remote"
+        }
+        for camera_id, image in self._latest_remote_preview_images.items():
+            labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
+            self.camera_frame_ready.emit(camera_id, labeled)
         considered_pairs, merged_pairs = self._overlap_dedup.last_map_presence_stats()
         map_debug_stats = self._overlap_dedup.map_debug_stats()
         deduped_overlap_track_count = merged_pairs
@@ -389,7 +406,7 @@ class MultiCameraPipelineManager(QObject):
             self._last_snapshot_persisted_at = timestamp
         self.analytics_ready.emit(analytics_snapshot)
         self.runtime_snapshot_ready.emit(runtime_snapshot)
-        self._emit_operator_frames(camera_packets, map_presences)
+        self._emit_operator_frames(camera_packets, labels_by_camera)
 
     @staticmethod
     def _determine_session_sync_mode(active_cameras: list[CameraConfig], file_sync_enabled: bool = True) -> str:
@@ -412,8 +429,26 @@ class MultiCameraPipelineManager(QObject):
     def _emit_operator_frames(
         self,
         camera_packets: dict[str, CameraTrackingPacket],
-        map_presences: list[MapPresence],
+        labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]],
     ) -> None:
+        remote_camera_ids = {
+            camera.camera_id for camera in self.project_config.cameras if camera.runtime_mode == "remote"
+        }
+        for camera_id, packet in camera_packets.items():
+            if camera_id in remote_camera_ids:
+                continue
+            image = self._frame_images.get(camera_id, {}).get(packet.frame_index)
+            if not isinstance(image, QImage):
+                continue
+            labeled = self._draw_operator_labels(image, labels_by_camera.get(camera_id, []))
+            self.camera_frame_ready.emit(camera_id, labeled)
+            self._drop_stale_frame_images(camera_id, keep_from_index=packet.frame_index - 1)
+
+    @staticmethod
+    def _build_operator_labels(
+        camera_packets: dict[str, CameraTrackingPacket],
+        map_presences: list[MapPresence],
+    ) -> dict[str, list[tuple[tuple[int, int, int, int], str]]]:
         labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
         for map_presence in map_presences:
             label = map_presence.presence_id if map_presence.merged_for_counting else ""
@@ -425,14 +460,7 @@ class MultiCameraPipelineManager(QObject):
                 if identity_track is None or identity_track.current_bbox_xyxy is None:
                     continue
                 labels_by_camera.setdefault(camera_id, []).append((identity_track.current_bbox_xyxy, label))
-
-        for camera_id, packet in camera_packets.items():
-            image = self._frame_images.get(camera_id, {}).get(packet.frame_index)
-            if not isinstance(image, QImage):
-                continue
-            labeled = self._draw_operator_labels(image, labels_by_camera.get(camera_id, []))
-            self.camera_frame_ready.emit(camera_id, labeled)
-            self._drop_stale_frame_images(camera_id, keep_from_index=packet.frame_index - 1)
+        return labels_by_camera
 
     @staticmethod
     def _draw_operator_labels(
@@ -483,6 +511,8 @@ class MultiCameraPipelineManager(QObject):
             thread.deleteLater()
         self._packets.pop(camera_id, None)
         self._frame_images.pop(camera_id, None)
+        self._latest_remote_preview_images.pop(camera_id, None)
+        self._latest_remote_labels_by_camera.pop(camera_id, None)
         if self._running and self._workers:
             return
         self._finish_stop_if_possible()

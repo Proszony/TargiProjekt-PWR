@@ -111,10 +111,10 @@ class MainWindow(QMainWindow):
 
         self.camera_grid = CameraGridView()
         self.map_view = MapView()
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.camera_grid)
-        splitter.addWidget(self.map_view)
-        splitter.setSizes([900, 1100])
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.camera_grid)
+        self.splitter.addWidget(self.map_view)
+        self.splitter.setSizes([900, 1100])
 
         self.zone_stats_label = QLabel("Booth occupancy: no zones configured")
         self.tracks_stats_label = QLabel("Current occupancy: 0 | Visits: 0")
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         info_row.addWidget(self.fps_label)
 
         root.addLayout(toolbar)
-        root.addWidget(splitter, 1)
+        root.addWidget(self.splitter, 1)
         root.addLayout(info_row)
 
         exit_fullscreen = QAction(self)
@@ -284,9 +284,9 @@ class MainWindow(QMainWindow):
                 sync_drift_s=snapshot.sync_drift_by_camera_s.get(camera.camera_id, 0.0),
                 dropped_frames=snapshot.dropped_frames_by_camera.get(camera.camera_id, 0),
                 missing=camera.camera_id in snapshot.missing_cameras,
+                source_fps=packet.source_fps if packet is not None else None,
+                processing_latency_s=packet.processing_latency_s if packet is not None else None,
             )
-            if packet is None and camera.camera_id in snapshot.missing_cameras:
-                self.camera_grid.update_status(camera.camera_id, "sync waiting")
         self.statistics_window.set_runtime_snapshot(snapshot)
         self._schedule_runtime_presentation()
 
@@ -433,6 +433,11 @@ class MainWindow(QMainWindow):
         self._runtime_presenter.refresh_interval_s = 1.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0)
         self._telemetry_timer.setInterval(int(round(1000.0 / max(rd.DEFAULT_UI_LIVE_SNAPSHOT_RATE_HZ, 1.0))))
         self.camera_grid.set_cameras(self.project_config.cameras)
+        enabled_count = sum(1 for camera in self.project_config.cameras if camera.enabled)
+        if enabled_count == 1:
+            self.splitter.setSizes([1400, 600])
+        else:
+            self.splitter.setSizes([900, 1100])
         self.map_view.set_venue_map(self.project_config.venue_map)
         self.map_view.set_world_viewport(self._build_world_viewport())
         self.map_view.set_snapshot(self.last_snapshot)

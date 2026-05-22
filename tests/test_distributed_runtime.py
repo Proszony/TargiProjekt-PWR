@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,19 +18,39 @@ from core.models import (
 from core.statistics_service import StatisticsService
 
 try:
+    from PySide6.QtCore import QByteArray, QBuffer, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
     from core.multi_camera_runtime import MultiCameraPipelineManager
 except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
     MultiCameraPipelineManager = None
+    QByteArray = None
+    QBuffer = None
+    QIODevice = None
+    QColor = None
+    QImage = None
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
 
 
-def _packet(camera_id: str, person_id: str, point: tuple[float, float], appearance: list[float]) -> CameraTrackingPacket:
+def _packet(
+    camera_id: str,
+    person_id: str,
+    point: tuple[float, float],
+    appearance: list[float],
+    *,
+    frame_index: int = 1,
+    fps: float = 0.0,
+    source_fps: float | None = None,
+    processing_latency_s: float = 0.0,
+) -> CameraTrackingPacket:
     return CameraTrackingPacket(
         camera_id=camera_id,
         timestamp=1.0,
-        frame_index=1,
+        frame_index=frame_index,
+        source_fps=source_fps,
+        processing_latency_s=processing_latency_s,
         camera_identity_tracks={
             person_id: CameraIdentityTrack(
                 camera_person_id=person_id,
@@ -43,7 +65,29 @@ def _packet(camera_id: str, person_id: str, point: tuple[float, float], appearan
         reid_backend_ready=True,
         frame_size=(640, 480),
         coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+        fps=fps,
     )
+
+
+def _jpeg_preview(camera_id: str, *, frame_index: int) -> dict[str, object]:
+    if QImage is None or QColor is None or QByteArray is None or QBuffer is None or QIODevice is None:
+        raise RuntimeError("Qt preview helpers unavailable.")
+    image = QImage(640, 360, QImage.Format_RGB32)
+    image.fill(QColor("#020617"))
+    encoded = QByteArray()
+    buffer = QBuffer(encoded)
+    if not buffer.open(QIODevice.WriteOnly):
+        raise RuntimeError("Failed to open preview buffer.")
+    image.save(buffer, "JPEG", 80)
+    buffer.close()
+    return {
+        "camera_id": camera_id,
+        "frame_index": frame_index,
+        "timestamp": 1.0,
+        "width": image.width(),
+        "height": image.height(),
+        "jpeg_bytes": bytes(encoded),
+    }
 
 
 @unittest.skipIf(MultiCameraPipelineManager is None, f"UI dependencies unavailable: {_IMPORT_ERROR}")
@@ -94,6 +138,73 @@ class DistributedRuntimeTests(unittest.TestCase):
             self.assertEqual(set(latest.camera_packets), {"camera-local", "camera-remote"})
             self.assertGreaterEqual(latest.active_map_presence_count, 1)
             self.assertEqual(latest.analytics_snapshot.total_current_occupancy, 1)
+
+    def test_remote_packet_updates_camera_fps_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-remote",
+                        runtime_mode="remote",
+                        remote_worker_id="edge-1",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+                distributed_runtime=DistributedRuntimeConfig(enabled=True),
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            fps_updates: list[tuple[str, float]] = []
+            manager.camera_fps_changed.connect(lambda camera_id, fps: fps_updates.append((camera_id, fps)))
+
+            manager._handle_remote_packet(
+                _packet(
+                    "camera-remote",
+                    "camera-remote:P1",
+                    (2.0, 2.0),
+                    [1.0, 0.0, 0.0],
+                    fps=17.5,
+                )
+            )
+
+            self.assertIn(("camera-remote", 17.5), fps_updates)
+
+    def test_remote_preview_refreshes_even_when_packet_frame_index_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-remote",
+                        runtime_mode="remote",
+                        remote_worker_id="edge-1",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+                distributed_runtime=DistributedRuntimeConfig(enabled=True),
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            rendered_frames: list[QImage] = []
+            manager.camera_frame_ready.connect(
+                lambda camera_id, image: rendered_frames.append(image)
+                if camera_id == "camera-remote" and isinstance(image, QImage)
+                else None
+            )
+
+            manager._handle_remote_preview_frame(_jpeg_preview("camera-remote", frame_index=10))
+            manager._handle_remote_packet(
+                _packet(
+                    "camera-remote",
+                    "camera-remote:P1",
+                    (2.0, 2.0),
+                    [1.0, 0.0, 0.0],
+                    frame_index=12,
+                )
+            )
+
+            self.assertGreaterEqual(len(rendered_frames), 2)
 
 
 if __name__ == "__main__":
