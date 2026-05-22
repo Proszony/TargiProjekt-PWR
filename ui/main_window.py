@@ -201,11 +201,16 @@ class MainWindow(QMainWindow):
         old_ids = {camera.camera_id for camera in self.project_config.cameras}
         new_ids = {camera.camera_id for camera in normalized}
         self.project_config.cameras = normalized
+        self.camera_frames = {
+            camera_id: image
+            for camera_id, image in self.camera_frames.items()
+            if camera_id in new_ids
+        }
         self._refresh_from_project()
         if self.runtime_manager is not None:
             self.runtime_manager.update_project_config(self.project_config)
             if old_ids != new_ids:
-                self.statusBar().showMessage("Camera topology changed. New or removed cameras apply fully on next start.")
+                self.statusBar().showMessage("Camera topology updated.")
             else:
                 self.statusBar().showMessage("Camera settings applied")
 

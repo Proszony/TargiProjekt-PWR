@@ -465,10 +465,22 @@ class CameraPipelineWorker(QObject):
         )
 
     def _should_skip_file_frame(self, media_time_s: float | None) -> bool:
-        return False
+        if media_time_s is None or self.file_playback_started_wall_time is None:
+            return False
+        if self.session_sync_mode == "all_file_strict":
+            return False
+        lag_s = time.perf_counter() - (self.file_playback_started_wall_time + media_time_s)
+        return lag_s > self.playback_sync_config.late_frame_drop_threshold_s
 
     def _pace_file_frame(self, media_time_s: float | None) -> None:
-        return
+        if media_time_s is None or self.file_playback_started_wall_time is None:
+            return
+        if self.session_sync_mode == "all_file_strict":
+            return
+        target_wall_time = self.file_playback_started_wall_time + media_time_s
+        sleep_s = target_wall_time - time.perf_counter()
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
 
     def _materialize_tracker_config(self, camera_config: CameraConfig) -> str:
         signature = (

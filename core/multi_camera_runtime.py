@@ -79,6 +79,31 @@ class MultiCameraPipelineManager(QObject):
         self._analytics.zone_entry_min_duration_s = self.project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = self.project_config.analytics.zone_exit_grace_s
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
+        stale_camera_ids = set(self._packets) - set(camera_lookup)
+        for camera_id in stale_camera_ids:
+            self._packets.pop(camera_id, None)
+            self._frame_images.pop(camera_id, None)
+            self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_labels_by_camera.pop(camera_id, None)
+        active_local_camera_ids = {
+            camera.camera_id
+            for camera in self.project_config.cameras
+            if camera.enabled and camera.runtime_mode == "local"
+        }
+        active_remote_cameras = [
+            camera
+            for camera in self.project_config.cameras
+            if camera.enabled and camera.runtime_mode == "remote"
+        ]
+        removed_camera_ids = set(self._workers) - active_local_camera_ids
+        for camera_id in removed_camera_ids:
+            worker = self._workers.get(camera_id)
+            if worker is not None:
+                worker.stop()
+            self._packets.pop(camera_id, None)
+            self._frame_images.pop(camera_id, None)
+            self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_labels_by_camera.pop(camera_id, None)
         for camera_id, worker in self._workers.items():
             camera = camera_lookup.get(camera_id)
             if camera is None:
@@ -93,7 +118,28 @@ class MultiCameraPipelineManager(QObject):
             worker.set_detection_enabled(camera.enabled)
             worker.set_detector_model_path(camera.detector_model_path)
             worker.set_detector_augmentation(camera.detector_use_augmentation)
-        if self._remote_server is not None:
+        if self._running:
+            for camera in self.project_config.cameras:
+                if (
+                    camera.camera_id not in self._workers
+                    and camera.enabled
+                    and camera.runtime_mode == "local"
+                ):
+                    self._start_camera_worker(camera)
+            if active_remote_cameras:
+                if self._remote_server is None:
+                    self._start_remote_server()
+                    if self._remote_server is not None:
+                        self._remote_server.start_session(self._session_sync_mode)
+                if self._remote_server is not None:
+                    self._remote_server.update_project_config(self.project_config)
+                for camera in active_remote_cameras:
+                    self.camera_status_changed.emit(camera.camera_id, "waiting for worker")
+            elif self._remote_server is not None:
+                self._remote_server.stop_session()
+                self._remote_server.stop()
+                self._remote_server = None
+        elif self._remote_server is not None:
             self._remote_server.update_project_config(self.project_config)
 
     def start_all(self) -> None:
@@ -153,7 +199,7 @@ class MultiCameraPipelineManager(QObject):
 
     @staticmethod
     def worker_file_playback_started_wall_time(session_sync_mode: str) -> float | None:
-        if not session_sync_mode.startswith("all_file"):
+        if not (session_sync_mode.startswith("all_file") or session_sync_mode == "single_file_realtime"):
             return None
         return time.perf_counter()
 
@@ -414,6 +460,8 @@ class MultiCameraPipelineManager(QObject):
             return "all_live_unsynced"
         source_types = {camera.source_type for camera in active_cameras}
         if source_types == {"file"}:
+            if len(active_cameras) == 1:
+                return "single_file_realtime"
             return "all_file_strict" if file_sync_enabled else "all_file_unsynced"
         if source_types == {"udp"}:
             return "all_live_unsynced"

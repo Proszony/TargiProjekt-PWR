@@ -62,6 +62,14 @@ class DistributedRuntimeServer(QObject):
 
     def update_project_config(self, project_config: ProjectConfig) -> None:
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
+        stale_connections: list[_WorkerConnection] = []
+        remote_ids = self.remote_camera_ids()
+        with self._lock:
+            for camera_id, connection in self._connections_by_camera.items():
+                if camera_id not in remote_ids:
+                    stale_connections.append(connection)
+        for connection in stale_connections:
+            self._drop_connection(connection, "removed from project")
 
     def start(self) -> None:
         if self._running:

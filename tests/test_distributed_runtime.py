@@ -92,6 +92,13 @@ def _jpeg_preview(camera_id: str, *, frame_index: int) -> dict[str, object]:
 
 @unittest.skipIf(MultiCameraPipelineManager is None, f"UI dependencies unavailable: {_IMPORT_ERROR}")
 class DistributedRuntimeTests(unittest.TestCase):
+    def test_single_file_camera_uses_realtime_session_mode(self) -> None:
+        mode = MultiCameraPipelineManager._determine_session_sync_mode(
+            [CameraConfig(camera_id="camera-1", source_type="file")]
+        )
+
+        self.assertEqual(mode, "single_file_realtime")
+
     def test_remote_packet_ingestion_updates_runtime_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

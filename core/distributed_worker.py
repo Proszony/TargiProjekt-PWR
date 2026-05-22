@@ -150,7 +150,9 @@ class DistributedCameraWorker:
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
             return
         file_playback_started_wall_time = (
-            time.perf_counter() if self._session_sync_mode.startswith("all_file") else None
+            time.perf_counter()
+            if (self._session_sync_mode.startswith("all_file") or self._session_sync_mode == "single_file_realtime")
+            else None
         )
         worker = CameraPipelineWorker(
             camera_config=CameraConfig.from_dict(self.camera_config.to_dict()),
