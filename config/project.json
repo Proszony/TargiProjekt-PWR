@@ -1,5 +1,86 @@
 {
-  "shared_anchors": [],
+  "shared_anchors": [
+    {
+      "anchor_id": "anchor-001",
+      "name": "anchor-001",
+      "world_point": [
+        4.567397388059701,
+        1.2432952425373134
+      ]
+    },
+    {
+      "anchor_id": "anchor-002",
+      "name": "anchor-002",
+      "world_point": [
+        3.2259357509328357,
+        5.798084771455224
+      ]
+    },
+    {
+      "anchor_id": "anchor-003",
+      "name": "anchor-003",
+      "world_point": [
+        3.0699043843283578,
+        2.2574626865671643
+      ]
+    },
+    {
+      "anchor_id": "anchor-004",
+      "name": "anchor-004",
+      "world_point": [
+        6.214071245335821,
+        2.180212220149254
+      ]
+    },
+    {
+      "anchor_id": "anchor-005",
+      "name": "anchor-005",
+      "world_point": [
+        8.667793843283583,
+        5.890639575559701
+      ]
+    },
+    {
+      "anchor_id": "anchor-006",
+      "name": "anchor-006",
+      "world_point": [
+        5.932252798507463,
+        7.301407999067164
+      ]
+    },
+    {
+      "anchor_id": "anchor-007",
+      "name": "anchor-007",
+      "world_point": [
+        5.9402693563432845,
+        9.905040228544776
+      ]
+    },
+    {
+      "anchor_id": "anchor-008",
+      "name": "anchor-008",
+      "world_point": [
+        8.701609141791044,
+        2.1058039878731343
+      ]
+    },
+    {
+      "anchor_id": "anchor-009",
+      "name": "anchor-009",
+      "world_point": [
+        9.504139458955224,
+        2.4063520289179103
+      ]
+    },
+    {
+      "anchor_id": "anchor-010",
+      "name": "anchor-010",
+      "world_point": [
+        1.5901206856343284,
+        1.7581768889925373
+      ]
+    }
+  ],
   "analytics": {
     "zone_entry_min_duration_s": 0.35,
     "zone_exit_grace_s": 0.75

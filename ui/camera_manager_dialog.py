@@ -35,6 +35,7 @@ class CameraEditorDialog(QDialog):
         camera_config: CameraConfig,
         all_camera_ids: list[str],
         detector_models: list[tuple[str, str]],
+        project_root: Path,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -43,6 +44,7 @@ class CameraEditorDialog(QDialog):
         self._camera = CameraConfig.from_dict(camera_config.to_dict())
         self._all_camera_ids = [camera_id for camera_id in all_camera_ids if camera_id != self._camera.camera_id]
         self._detector_models = list(detector_models)
+        self._project_root = project_root
         self._build_ui()
         self._load_values()
         self._update_source_controls()
@@ -81,6 +83,10 @@ class CameraEditorDialog(QDialog):
         self.source_type_combo = QComboBox()
         self.source_type_combo.addItem("UDP stream", "udp")
         self.source_type_combo.addItem("Local MP4", "file")
+        self.project_mp4_combo = QComboBox()
+        self.project_mp4_combo.addItem("Choose project MP4...", "")
+        for path in sorted(self._project_root.glob("*.mp4")):
+            self.project_mp4_combo.addItem(path.name, str(path))
         self.source_value_input = QLineEdit()
         self.browse_source_button = QPushButton("Browse...")
         self.loop_file_checkbox = QCheckBox("Loop playback")
@@ -111,6 +117,7 @@ class CameraEditorDialog(QDialog):
         form.addRow("Runtime mode", self.runtime_mode_combo)
         form.addRow("Remote worker ID", self.remote_worker_id_input)
         form.addRow("Source type", self.source_type_combo)
+        form.addRow("Project MP4", self.project_mp4_combo)
         form.addRow("Source", source_row)
         form.addRow("", self.loop_file_checkbox)
         form.addRow("Detector model", self.detector_model_combo)
@@ -135,6 +142,7 @@ class CameraEditorDialog(QDialog):
         self.button_box.rejected.connect(self.reject)
         self.runtime_mode_combo.currentIndexChanged.connect(self._update_source_controls)
         self.source_type_combo.currentIndexChanged.connect(self._update_source_controls)
+        self.project_mp4_combo.currentIndexChanged.connect(self._select_project_mp4)
         self.browse_source_button.clicked.connect(self._browse_source)
 
     def _load_values(self) -> None:
@@ -159,15 +167,22 @@ class CameraEditorDialog(QDialog):
         file_mode = self.source_type_combo.currentData() == "file"
         remote_mode = self.runtime_mode_combo.currentData() == "remote"
         self.remote_worker_id_input.setEnabled(remote_mode)
+        self.project_mp4_combo.setVisible(file_mode)
         self.browse_source_button.setVisible(file_mode)
         self.loop_file_checkbox.setVisible(file_mode)
+
+    @Slot()
+    def _select_project_mp4(self) -> None:
+        path = self.project_mp4_combo.currentData()
+        if isinstance(path, str) and path:
+            self.source_value_input.setText(path)
 
     @Slot()
     def _browse_source(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select video file",
-            str(Path.cwd()),
+            str(self._project_root),
             "Video files (*.mp4 *.mov *.mkv *.avi)",
         )
         if path:
@@ -223,6 +238,7 @@ class CameraManagerDialog(QDialog):
         self.resize(820, 520)
         self._cameras = [CameraConfig.from_dict(camera.to_dict()) for camera in cameras]
         self._detector_models = available_detection_models(project_root)
+        self._project_root = project_root
         self._build_ui()
         self._refresh_list()
         apply_chrome(self)
@@ -326,7 +342,13 @@ class CameraManagerDialog(QDialog):
             name=f"Camera {next_index}",
             display_order=next_index - 1,
         )
-        dialog = CameraEditorDialog(camera, [item.camera_id for item in self._cameras], self._detector_models, self)
+        dialog = CameraEditorDialog(
+            camera,
+            [item.camera_id for item in self._cameras],
+            self._detector_models,
+            self._project_root,
+            self,
+        )
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         self._cameras.append(dialog.camera_config)
@@ -339,7 +361,13 @@ class CameraManagerDialog(QDialog):
             return
         current_id = self._cameras[index].camera_id
         other_ids = [item.camera_id for item in self._cameras if item.camera_id != current_id]
-        dialog = CameraEditorDialog(self._cameras[index], other_ids, self._detector_models, self)
+        dialog = CameraEditorDialog(
+            self._cameras[index],
+            other_ids,
+            self._detector_models,
+            self._project_root,
+            self,
+        )
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         updated = dialog.camera_config
