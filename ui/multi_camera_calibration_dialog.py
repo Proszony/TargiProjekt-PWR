@@ -284,15 +284,7 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int)
     def _on_anchor_deleted(self, index: int) -> None:
-        if index < 0 or index >= len(self._project.shared_anchors):
-            return
-        anchor_id = self._project.shared_anchors[index].anchor_id
-        del self._project.shared_anchors[index]
-        for camera in self._project.cameras:
-            camera.anchor_observations = [
-                item for item in camera.anchor_observations if item.anchor_id != anchor_id
-            ]
-        self._refresh_views()
+        self._remove_shared_anchor(index)
 
     @Slot(int, float, float)
     def _on_image_point_moved(self, index: int, x: float, y: float) -> None:
@@ -336,8 +328,12 @@ class MultiCameraCalibrationDialog(QDialog):
         if row < 0:
             return
         anchor_id = self.anchor_list.item(row).data(256)
-        self._remove_observation(anchor_id)
-        self._refresh_views()
+        anchor_index = next(
+            (index for index, anchor in enumerate(self._project.shared_anchors) if anchor.anchor_id == anchor_id),
+            None,
+        )
+        if anchor_index is not None:
+            self._remove_shared_anchor(anchor_index)
 
     def _set_observation(self, anchor_id: str, point: Point) -> None:
         camera = self._selected_camera()
@@ -356,6 +352,19 @@ class MultiCameraCalibrationDialog(QDialog):
         camera.anchor_observations = [
             item for item in camera.anchor_observations if item.anchor_id != anchor_id
         ]
+
+    def _remove_shared_anchor(self, index: int) -> None:
+        if index < 0 or index >= len(self._project.shared_anchors):
+            return
+        anchor_id = self._project.shared_anchors[index].anchor_id
+        del self._project.shared_anchors[index]
+        for camera in self._project.cameras:
+            camera.anchor_observations = [
+                item for item in camera.anchor_observations if item.anchor_id != anchor_id
+            ]
+        if self._selected_anchor_id == anchor_id:
+            self._selected_anchor_id = None
+        self._refresh_views()
 
     def _anchor_row(self, anchor_id: str) -> int | None:
         for row in range(self.anchor_list.count()):

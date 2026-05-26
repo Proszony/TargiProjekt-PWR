@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -32,6 +33,81 @@ from PySide6.QtWidgets import (
 from core.models import AnalyticsSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig
 from core.statistics_repository import StatisticsRepository
 from ui.style_system import COLORS, apply_chrome
+
+
+class RankedMetricList(QWidget):
+    def __init__(self, empty_text: str) -> None:
+        super().__init__()
+        self._empty_text = empty_text
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+        self.setObjectName("RankedMetricList")
+
+    def set_rows(self, rows: list[tuple[str, float, str]], color: str) -> None:
+        self._clear()
+        ranked = sorted(rows, key=lambda item: item[1], reverse=True)
+        if not ranked or max((value for _name, value, _display in ranked), default=0.0) <= 0.0:
+            empty = QLabel(self._empty_text)
+            empty.setObjectName("RankedEmpty")
+            empty.setAlignment(Qt.AlignCenter)
+            self._layout.addWidget(empty, 1)
+            return
+
+        max_value = max(value for _name, value, _display in ranked)
+        for name, value, display_value in ranked[:5]:
+            self._layout.addWidget(self._build_row(name, value / max_value, display_value, color))
+        self._layout.addStretch(1)
+
+    def _clear(self) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    @staticmethod
+    def _build_row(name: str, ratio: float, display_value: str, color: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("RankedRow")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 9)
+        layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        name_label = QLabel(name)
+        name_label.setObjectName("RankedName")
+        value_label = QLabel(display_value)
+        value_label.setObjectName("RankedValue")
+        value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        header.addWidget(name_label, 1)
+        header.addWidget(value_label)
+
+        bar = QProgressBar()
+        bar.setObjectName("RankedBar")
+        bar.setRange(0, 1000)
+        bar.setValue(int(max(0.0, min(ratio, 1.0)) * 1000))
+        bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        bar.setStyleSheet(
+            f"""
+            QProgressBar#RankedBar {{
+                background: {COLORS["bg-input"]};
+                border: 1px solid {COLORS["border-muted"]};
+                border-radius: 4px;
+            }}
+            QProgressBar#RankedBar::chunk {{
+                background: {color};
+                border-radius: 4px;
+            }}
+            """
+        )
+
+        layout.addLayout(header)
+        layout.addWidget(bar)
+        return frame
 
 
 class StatisticsWindow(QMainWindow):
@@ -150,15 +226,15 @@ class StatisticsWindow(QMainWindow):
 
         charts_row = QHBoxLayout()
         charts_row.setSpacing(12)
-        self.live_visits_chart = self._create_chart_view("Visits by booth")
-        self.live_dwell_chart = self._create_chart_view("Average time by booth")
-        self.live_peak_chart = self._create_chart_view("Peak occupancy by booth")
-        visits_panel = self._create_panel("Visits", "Which booths are drawing the most traffic")
-        visits_panel.layout().addWidget(self.live_visits_chart)  # type: ignore[union-attr]
-        dwell_panel = self._create_panel("Time", "Average time spent at each booth")
-        dwell_panel.layout().addWidget(self.live_dwell_chart)  # type: ignore[union-attr]
-        peak_panel = self._create_panel("Peak load", "Highest simultaneous occupancy per booth")
-        peak_panel.layout().addWidget(self.live_peak_chart)  # type: ignore[union-attr]
+        self.live_visits_rank = RankedMetricList("No visits yet")
+        self.live_time_rank = RankedMetricList("No recorded time yet")
+        self.live_peak_rank = RankedMetricList("No peak load yet")
+        visits_panel = self._create_panel("Visits", "Booths ranked by completed visits")
+        visits_panel.layout().addWidget(self.live_visits_rank, 1)  # type: ignore[union-attr]
+        dwell_panel = self._create_panel("Time", "Average time per visit")
+        dwell_panel.layout().addWidget(self.live_time_rank, 1)  # type: ignore[union-attr]
+        peak_panel = self._create_panel("Peak load", "Highest simultaneous occupancy")
+        peak_panel.layout().addWidget(self.live_peak_rank, 1)  # type: ignore[union-attr]
         charts_row.addWidget(visits_panel, 1)
         charts_row.addWidget(dwell_panel, 1)
         charts_row.addWidget(peak_panel, 1)
@@ -301,6 +377,34 @@ class StatisticsWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         apply_chrome(self)
+        self.setStyleSheet(
+            self.styleSheet()
+            + f"""
+            QWidget#RankedMetricList {{
+                background: transparent;
+            }}
+            QFrame#RankedRow {{
+                background: {COLORS["bg-shell-deep"]};
+                border: 1px solid {COLORS["border-muted"]};
+                border-radius: 10px;
+            }}
+            QLabel#RankedName {{
+                color: {COLORS["text-primary"]};
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QLabel#RankedValue {{
+                color: {COLORS["text-secondary"]};
+                font-size: 13px;
+                font-weight: 800;
+            }}
+            QLabel#RankedEmpty {{
+                color: {COLORS["text-faint"]};
+                font-size: 12px;
+                padding: 22px;
+            }}
+            """
+        )
 
     def set_current_session_id(self, session_id: int | None) -> None:
         self.current_session_id = session_id
@@ -313,6 +417,28 @@ class StatisticsWindow(QMainWindow):
         )
         self._last_live_timeline_refresh_at = 0.0
         self._refresh_live_timeline()
+
+    def _set_ranked_live_lists(self, rows: list[object]) -> None:
+        visits: list[tuple[str, float, str]] = []
+        time_values: list[tuple[str, float, str]] = []
+        peaks: list[tuple[str, float, str]] = []
+        for row in rows:
+            if isinstance(row, dict):
+                name = str(row["zone_name"])
+                visit_count = float(row["unique_visits"])
+                avg_time = float(row["avg_dwell_s"])
+                peak = float(row.get("peak_occupancy", 0))
+            else:
+                name = row.zone_name
+                visit_count = float(row.unique_visits)
+                avg_time = float(row.avg_dwell_s)
+                peak = float(row.peak_occupancy)
+            visits.append((name, visit_count, str(int(visit_count))))
+            time_values.append((name, avg_time, f"{avg_time:.1f}s"))
+            peaks.append((name, peak, str(int(peak))))
+        self.live_visits_rank.set_rows(visits, COLORS["accent-blue"])
+        self.live_time_rank.set_rows(time_values, COLORS["accent-amber"])
+        self.live_peak_rank.set_rows(peaks, COLORS["accent-violet"])
 
     def set_live_snapshot(self, snapshot: AnalyticsSnapshot, venue_map: VenueMapConfig) -> None:
         self.live_snapshot = snapshot
@@ -329,9 +455,7 @@ class StatisticsWindow(QMainWindow):
         self.live_active_booths_value.setText(str(active_booths))
 
         self._populate_metrics_table(self.live_table, metrics_rows)
-        self._set_bar_chart(self.live_visits_chart.chart(), "Visits by booth", metrics_rows, "unique_visits")
-        self._set_bar_chart(self.live_dwell_chart.chart(), "Average time by booth", metrics_rows, "avg_dwell_s")
-        self._set_bar_chart(self.live_peak_chart.chart(), "Peak occupancy by booth", metrics_rows, "peak_occupancy")
+        self._set_ranked_live_lists(metrics_rows)
 
         zone_names = [row.zone_name for row in metrics_rows]
         current_name = self.timeline_zone_combo.currentText()
@@ -698,52 +822,6 @@ class StatisticsWindow(QMainWindow):
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
         return frame
-
-    def _set_bar_chart(self, chart: QChart, title: str, rows: list[object], attribute: str) -> None:
-        chart.removeAllSeries()
-        self._style_chart(chart, title)
-        for axis in chart.axes():
-            chart.removeAxis(axis)
-        if not rows:
-            return
-        categories: list[str] = []
-        values = QBarSet(title)
-        values.setColor(
-            QColor(
-                COLORS["accent-blue"]
-                if attribute == "unique_visits"
-                else COLORS["accent-green"]
-                if attribute == "current_occupancy"
-                else COLORS["accent-amber"]
-            )
-        )
-        values.setBorderColor(QColor("#00000000"))
-        for row in rows:
-            if isinstance(row, dict):
-                categories.append(str(row["zone_name"]))
-                values.append(float(row[attribute]))
-            else:
-                categories.append(row.zone_name)
-                values.append(float(getattr(row, attribute)))
-        series = QBarSeries()
-        series.append(values)
-        chart.addSeries(series)
-
-        axis_x = QBarCategoryAxis()
-        axis_x.append(categories)
-        axis_x.setLabelsColor(QColor(COLORS["text-muted"]))
-        axis_x.setGridLineVisible(False)
-
-        axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor(COLORS["text-muted"]))
-        axis_y.setGridLineColor(QColor(COLORS["border-strong"]))
-        axis_y.setMinorGridLineVisible(False)
-        axis_y.setLabelFormat("%d" if attribute in {"current_occupancy", "unique_visits", "peak_occupancy"} else "%.1f")
-
-        chart.addAxis(axis_x, Qt.AlignBottom)
-        chart.addAxis(axis_y, Qt.AlignLeft)
-        series.attachAxis(axis_x)
-        series.attachAxis(axis_y)
 
     def _set_line_chart(self, chart: QChart, title: str, timeline: list[dict[str, object]]) -> None:
         chart.removeAllSeries()

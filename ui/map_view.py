@@ -383,6 +383,8 @@ class MapView(QWidget):
             key=lambda item: item.camera_id == self._focused_camera_id,
         )
         for coverage in ordered:
+            if self._focused_camera_id is not None and coverage.camera_id != self._focused_camera_id:
+                continue
             raw_polygon = coverage.raw_polygon_world
             clipped_polygon = coverage.polygon_world
             is_focus = coverage.camera_id == self._focused_camera_id
