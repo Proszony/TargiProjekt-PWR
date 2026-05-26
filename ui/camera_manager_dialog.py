@@ -84,11 +84,12 @@ class CameraEditorDialog(QDialog):
         self.source_type_combo.addItem("UDP stream", "udp")
         self.source_type_combo.addItem("Local MP4", "file")
         self.project_mp4_combo = QComboBox()
-        self.project_mp4_combo.addItem("Choose project MP4...", "")
+        self.project_mp4_combo.addItem("Use external path or stream value", "")
         for path in sorted(self._project_root.glob("*.mp4")):
-            self.project_mp4_combo.addItem(path.name, str(path))
+            self.project_mp4_combo.addItem(path.name, path.name)
         self.source_value_input = QLineEdit()
-        self.browse_source_button = QPushButton("Browse...")
+        self.source_value_input.setPlaceholderText("UDP URL, project MP4 filename, or external file path")
+        self.browse_source_button = QPushButton("Browse external...")
         self.loop_file_checkbox = QCheckBox("Loop playback")
         self.detector_model_combo = QComboBox()
         for label, model_path in self._detector_models:
@@ -155,6 +156,9 @@ class CameraEditorDialog(QDialog):
         self.remote_worker_id_input.setText(self._camera.remote_worker_id)
         self.source_type_combo.setCurrentIndex(0 if self._camera.source_type == "udp" else 1)
         self.source_value_input.setText(self._camera.source_value)
+        project_mp4_index = self.project_mp4_combo.findData(self._camera.source_value)
+        if project_mp4_index >= 0:
+            self.project_mp4_combo.setCurrentIndex(project_mp4_index)
         self.loop_file_checkbox.setChecked(self._camera.loop_file)
         detector_index = self.detector_model_combo.findData(self._camera.detector_model_path)
         if detector_index >= 0:
@@ -173,9 +177,9 @@ class CameraEditorDialog(QDialog):
 
     @Slot()
     def _select_project_mp4(self) -> None:
-        path = self.project_mp4_combo.currentData()
-        if isinstance(path, str) and path:
-            self.source_value_input.setText(path)
+        relative_path = self.project_mp4_combo.currentData()
+        if isinstance(relative_path, str) and relative_path:
+            self.source_value_input.setText(relative_path)
 
     @Slot()
     def _browse_source(self) -> None:
@@ -187,6 +191,7 @@ class CameraEditorDialog(QDialog):
         )
         if path:
             self.source_value_input.setText(path)
+            self.project_mp4_combo.setCurrentIndex(0)
 
     @Slot()
     def _accept_if_valid(self) -> None:
@@ -201,7 +206,7 @@ class CameraEditorDialog(QDialog):
         if (
             self.runtime_mode_combo.currentData() == "local"
             and self.source_type_combo.currentData() == "file"
-            and not Path(source_value).expanduser().exists()
+            and not self._source_file_exists(source_value)
         ):
             QMessageBox.warning(self, "Missing file", "Selected video file does not exist.")
             return
@@ -222,6 +227,12 @@ class CameraEditorDialog(QDialog):
             camera_id for camera_id, checkbox in self.overlap_checks.items() if checkbox.isChecked()
         ]
         self.accept()
+
+    def _source_file_exists(self, source_value: str) -> bool:
+        path = Path(source_value).expanduser()
+        if path.is_absolute():
+            return path.exists()
+        return (self._project_root / path).exists()
 
 
 class CameraManagerDialog(QDialog):
