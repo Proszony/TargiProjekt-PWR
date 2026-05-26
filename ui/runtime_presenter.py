@@ -71,7 +71,7 @@ class RuntimePresenter:
             f"Media t: {runtime_snapshot.session_media_time_s or 0.0:.2f}s | "
             f"Booths active: {active_booths} | "
             f"Current occupancy: {analytics_snapshot.total_current_occupancy} | "
-            f"Avg dwell: {mean_avg_dwell:.1f}s | "
+            f"Avg time: {mean_avg_dwell:.1f}s | "
             f"Map presences: {runtime_snapshot.active_map_presence_count} | "
             f"Drift max: {max_drift:.3f}s | "
             f"Missing: {len(runtime_snapshot.missing_cameras)}"

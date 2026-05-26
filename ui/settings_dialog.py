@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal, Slot
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QVBoxLayout
 
 from core.models import ProjectConfig
+from ui.style_system import apply_chrome
 
 
 class SettingsDialog(QDialog):
@@ -18,6 +19,7 @@ class SettingsDialog(QDialog):
         self._is_running = is_running
         self._build_ui()
         self._load_values()
+        apply_chrome(self)
 
     @property
     def project_config(self) -> ProjectConfig:
@@ -25,11 +27,23 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
+
+        title = QLabel("Time tracking controls")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel(
+            "Tune entry confirmation and exit grace without touching the detection or sync pipeline."
+        )
+        subtitle.setObjectName("SectionSubtitle")
+        subtitle.setWordWrap(True)
         form = QFormLayout()
+        form.setSpacing(12)
 
         helper = QLabel(
-            "Only booth dwell timing is configurable here. Detection, sync, counting, and distributed transport run with product defaults."
+            "Only booth time tracking is configurable here. Detection, sync, counting, and distributed transport run with product defaults."
         )
+        helper.setObjectName("HintText")
         helper.setWordWrap(True)
 
         self.zone_entry_spin = QDoubleSpinBox()
@@ -47,7 +61,10 @@ class SettingsDialog(QDialog):
         self.button_box.accepted.connect(self._accept_and_apply)
         self.button_box.button(QDialogButtonBox.Apply).clicked.connect(self._apply_clicked)
         self.button_box.rejected.connect(self.reject)
+        self.button_box.button(QDialogButtonBox.Apply).setProperty("kind", "primary")
 
+        root.addWidget(title)
+        root.addWidget(subtitle)
         root.addWidget(helper)
         root.addLayout(form)
         root.addWidget(self.button_box)

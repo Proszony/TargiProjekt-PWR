@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-26T00:00:00Z",
+  "title": "Design System: Fair Monitor",
+  "extensions": {
+    "colorMeta": {
+      "canvas-night": {
+        "role": "neutral",
+        "displayName": "Atlas Night",
+        "canonical": "#071018",
+        "tonalRamp": ["#071018", "#0a131b", "#0d1721", "#132230", "#1a3040"]
+      },
+      "accent-aqua": {
+        "role": "primary",
+        "displayName": "Signal Aqua",
+        "canonical": "#75d3e0",
+        "tonalRamp": ["#254255", "#75d3e0", "#7de3e1", "#98edeb"]
+      },
+      "accent-blue": {
+        "role": "secondary",
+        "displayName": "Telemetry Blue",
+        "canonical": "#38bdf8",
+        "tonalRamp": ["#172b3a", "#1a3040", "#38bdf8"]
+      },
+      "accent-amber": {
+        "role": "tertiary",
+        "displayName": "Time Amber",
+        "canonical": "#f59e0b",
+        "tonalRamp": ["#7c2d12", "#f59e0b", "#fbbf24"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Primary shell title and rare screen anchors."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel, dialog, and workspace headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Dense telemetry and helper copy."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [],
+    "narrative": {
+      "northStar": "The Signal Atlas",
+      "rules": [
+        "Aqua means focus or action, never decoration.",
+        "Depth is tonal, not shadow-driven.",
+        "The selected camera and the map context must stay coupled."
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Used for runtime start, accept, and high-certainty export actions.",
+      "html": "<button class=\"ds-btn-primary\">Start all</button>",
+      "css": ".ds-btn-primary { background: #7de3e1; color: #06222b; border: 1px solid #7de3e1; border-radius: 8px; padding: 7px 10px; font: 600 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-btn-primary:hover { background: #98edeb; border-color: #98edeb; }"
+    },
+    {
+      "name": "Metric Card",
+      "kind": "card",
+      "refersTo": "metric-card",
+      "description": "Compact analytics summary with accent chip instead of a side stripe.",
+      "html": "<div class=\"ds-metric-card\"><span class=\"ds-swatch\"></span><span class=\"ds-title\">Current occupancy</span><div class=\"ds-value\">12</div></div>",
+      "css": ".ds-metric-card { background: #0d1721; color: #f2f7fb; border: 1px solid #1f3141; border-radius: 12px; padding: 14px 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-swatch { display: inline-block; width: 10px; height: 10px; background: #38bdf8; border-radius: 5px; margin-right: 8px; } .ds-title { color: #9fb1c0; font-size: 12px; font-weight: 600; } .ds-value { margin-top: 6px; font-size: 26px; font-weight: 800; }"
+    },
+    {
+      "name": "Camera Selector",
+      "kind": "custom",
+      "refersTo": "camera-selector",
+      "description": "Status-rich selector used in the camera rail to switch the primary feed.",
+      "html": "<button class=\"ds-camera-selector\"><strong>Camera 2</strong><span>Running</span><span>LOCAL | 24.7 FPS | drift +0.003s</span></button>",
+      "css": ".ds-camera-selector { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: #132230; color: #f2f7fb; border: 1px solid #23394b; border-radius: 8px; padding: 8px 10px; font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; } .ds-camera-selector strong { font-weight: 700; } .ds-camera-selector span:last-child { color: #9fb1c0; } .ds-camera-selector.is-selected { background: #172b3a; border-color: #75d3e0; }"
+    }
+  ]
+}

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from core.models import AnalyticsSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig
 from core.statistics_repository import StatisticsRepository
+from ui.style_system import COLORS, apply_chrome
 
 
 class StatisticsWindow(QMainWindow):
@@ -86,6 +87,7 @@ class StatisticsWindow(QMainWindow):
         self.live_export_button.clicked.connect(self._export_live_csv)
         self.live_bundle_export_button = QPushButton("Export session bundle")
         self.live_bundle_export_button.clicked.connect(self._export_current_session_bundle)
+        self.live_bundle_export_button.setProperty("kind", "primary")
         header_row.addWidget(self.live_export_button)
         header_row.addWidget(self.live_bundle_export_button)
 
@@ -99,7 +101,7 @@ class StatisticsWindow(QMainWindow):
             "Visits", "0", "#38bdf8"
         )
         self.live_avg_dwell_card, self.live_avg_dwell_value = self._create_metric_card(
-            "Average dwell", "0.0s", "#f59e0b"
+            "Average time", "0.0s", "#f59e0b"
         )
         self.live_peak_card, self.live_peak_value = self._create_metric_card(
             "Peak occupancy", "0", "#a78bfa"
@@ -118,15 +120,15 @@ class StatisticsWindow(QMainWindow):
             [
                 "Booth",
                 "Type",
-                "Current occupancy",
+                "Now",
                 "Visits",
-                "Total dwell [s]",
-                "Avg dwell [s]",
-                "Median dwell [s]",
-                "Peak occupancy",
+                "Total [s]",
+                "Avg [s]",
+                "Median [s]",
+                "Peak",
             ]
         )
-        self._configure_table(self.live_table)
+        self._configure_table(self.live_table, [120, 76, 64, 70, 82, 76, 92, 70])
 
         timeline_header = QHBoxLayout()
         self.timeline_zone_combo = QComboBox()
@@ -138,7 +140,7 @@ class StatisticsWindow(QMainWindow):
 
         main_row = QHBoxLayout()
         main_row.setSpacing(12)
-        live_table_panel = self._create_panel("Booth snapshot", "Current occupancy and dwell summary per booth")
+        live_table_panel = self._create_panel("Booth snapshot", "Current occupancy and time summary per booth")
         live_table_panel.layout().addWidget(self.live_table)  # type: ignore[union-attr]
         live_timeline_panel = self._create_panel("Occupancy trend", "Live stepped occupancy for the selected booth")
         live_timeline_panel.layout().addLayout(timeline_header)  # type: ignore[union-attr]
@@ -149,11 +151,11 @@ class StatisticsWindow(QMainWindow):
         charts_row = QHBoxLayout()
         charts_row.setSpacing(12)
         self.live_visits_chart = self._create_chart_view("Visits by booth")
-        self.live_dwell_chart = self._create_chart_view("Average dwell by booth")
+        self.live_dwell_chart = self._create_chart_view("Average time by booth")
         self.live_peak_chart = self._create_chart_view("Peak occupancy by booth")
         visits_panel = self._create_panel("Visits", "Which booths are drawing the most traffic")
         visits_panel.layout().addWidget(self.live_visits_chart)  # type: ignore[union-attr]
-        dwell_panel = self._create_panel("Dwell", "Average time spent at each booth")
+        dwell_panel = self._create_panel("Time", "Average time spent at each booth")
         dwell_panel.layout().addWidget(self.live_dwell_chart)  # type: ignore[union-attr]
         peak_panel = self._create_panel("Peak load", "Highest simultaneous occupancy per booth")
         peak_panel.layout().addWidget(self.live_peak_chart)  # type: ignore[union-attr]
@@ -177,6 +179,7 @@ class StatisticsWindow(QMainWindow):
         self.refresh_history_button = QPushButton("Refresh")
         self.history_export_button = QPushButton("Export CSV")
         self.history_bundle_export_button = QPushButton("Export session bundle")
+        self.history_bundle_export_button.setProperty("kind", "primary")
         top_row.addWidget(QLabel("Session"))
         top_row.addWidget(self.session_selector, 1)
         top_row.addWidget(self.refresh_history_button)
@@ -198,7 +201,7 @@ class StatisticsWindow(QMainWindow):
             "Session visits", "0", "#38bdf8"
         )
         self.history_avg_card, self.history_avg_value = self._create_metric_card(
-            "Average dwell", "0.0s", "#f59e0b"
+            "Average time", "0.0s", "#f59e0b"
         )
         self.history_peak_card, self.history_peak_value = self._create_metric_card(
             "Peak occupancy", "0", "#a78bfa"
@@ -216,15 +219,15 @@ class StatisticsWindow(QMainWindow):
             [
                 "Booth",
                 "Type",
-                "Final occupancy",
+                "Final",
                 "Visits",
-                "Total dwell [s]",
-                "Avg dwell [s]",
-                "Median dwell [s]",
-                "Peak occupancy",
+                "Total [s]",
+                "Avg [s]",
+                "Median [s]",
+                "Peak",
             ]
         )
-        self._configure_table(self.history_table)
+        self._configure_table(self.history_table, [120, 76, 64, 70, 82, 76, 92, 70])
 
         timeline_header = QHBoxLayout()
         self.history_timeline_zone_combo = QComboBox()
@@ -237,7 +240,7 @@ class StatisticsWindow(QMainWindow):
 
         history_main_row = QHBoxLayout()
         history_main_row.setSpacing(12)
-        history_table_panel = self._create_panel("Session booth summary", "Final occupancy, visits and dwell metrics")
+        history_table_panel = self._create_panel("Session booth summary", "Final occupancy, visits and time metrics")
         history_table_panel.layout().addWidget(self.history_table)  # type: ignore[union-attr]
         history_timeline_panel = self._create_panel("Session timeline", "Selected booth occupancy across the session")
         history_timeline_panel.layout().addLayout(timeline_header)  # type: ignore[union-attr]
@@ -273,6 +276,7 @@ class StatisticsWindow(QMainWindow):
         top_row.addStretch(1)
         self.sessions_bundle_export_button = QPushButton("Export session bundle")
         self.sessions_bundle_export_button.clicked.connect(self._export_current_session_bundle)
+        self.sessions_bundle_export_button.setProperty("kind", "primary")
         top_row.addWidget(self.sessions_bundle_export_button)
         self.sessions_export_button = QPushButton("Export CSV")
         self.sessions_export_button.clicked.connect(self._export_sessions_csv)
@@ -281,96 +285,22 @@ class StatisticsWindow(QMainWindow):
         self.visit_sessions_table = QTableWidget(0, 7)
         self.visit_sessions_table.setHorizontalHeaderLabels(
             [
-                "Visit ID",
-                "Analytics track",
+                "Visit",
+                "Track",
                 "Booth",
                 "Entered",
                 "Left",
-                "Dwell [s]",
-                "Dedup mode",
+                "Time [s]",
+                "Dedup",
             ]
         )
-        self._configure_table(self.visit_sessions_table)
+        self._configure_table(self.visit_sessions_table, [180, 150, 110, 82, 82, 82, 220])
 
         layout.addLayout(top_row)
         layout.addWidget(self.visit_sessions_table)
 
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget {
-                background: #0f172a;
-                color: #e5e7eb;
-            }
-            QTabWidget::pane {
-                border: 1px solid #243041;
-                background: #111827;
-            }
-            QTabBar::tab {
-                background: #172033;
-                color: #cbd5e1;
-                padding: 10px 16px;
-                border: 1px solid #243041;
-                border-bottom: none;
-                min-width: 84px;
-            }
-            QTabBar::tab:selected {
-                background: #1e293b;
-                color: #f8fafc;
-            }
-            QFrame#PanelCard, QGroupBox#PanelCard {
-                background: #111827;
-                border: 1px solid #243041;
-                border-radius: 14px;
-            }
-            QPushButton {
-                background: #1d4ed8;
-                color: #f8fafc;
-                border: none;
-                border-radius: 8px;
-                padding: 8px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: #2563eb;
-            }
-            QComboBox {
-                background: #111827;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 6px 10px;
-                min-height: 28px;
-            }
-            QLabel#SectionTitle {
-                font-size: 16px;
-                font-weight: 700;
-                color: #f8fafc;
-            }
-            QLabel#MutedText {
-                color: #94a3b8;
-            }
-            QLabel#HintText {
-                color: #60a5fa;
-            }
-            QTableWidget {
-                background: #0b1220;
-                alternate-background-color: #101827;
-                gridline-color: #1f2937;
-                border: 1px solid #243041;
-                border-radius: 10px;
-                selection-background-color: #1d4ed8;
-                selection-color: #f8fafc;
-            }
-            QHeaderView::section {
-                background: #162033;
-                color: #cbd5e1;
-                border: none;
-                border-right: 1px solid #243041;
-                padding: 8px;
-                font-weight: 600;
-            }
-            """
-        )
+        apply_chrome(self)
 
     def set_current_session_id(self, session_id: int | None) -> None:
         self.current_session_id = session_id
@@ -400,7 +330,7 @@ class StatisticsWindow(QMainWindow):
 
         self._populate_metrics_table(self.live_table, metrics_rows)
         self._set_bar_chart(self.live_visits_chart.chart(), "Visits by booth", metrics_rows, "unique_visits")
-        self._set_bar_chart(self.live_dwell_chart.chart(), "Average dwell by booth", metrics_rows, "avg_dwell_s")
+        self._set_bar_chart(self.live_dwell_chart.chart(), "Average time by booth", metrics_rows, "avg_dwell_s")
         self._set_bar_chart(self.live_peak_chart.chart(), "Peak occupancy by booth", metrics_rows, "peak_occupancy")
 
         zone_names = [row.zone_name for row in metrics_rows]
@@ -698,34 +628,40 @@ class StatisticsWindow(QMainWindow):
     def _create_metric_card(title: str, value: str, accent: str) -> tuple[QFrame, QLabel]:
         frame = QFrame()
         frame.setObjectName("MetricCard")
-        frame.setStyleSheet(
-            f"""
-            QFrame#MetricCard {{
-                background: #111827;
-                border: 1px solid #243041;
-                border-left: 4px solid {accent};
-                border-radius: 12px;
-            }}
-            """
-        )
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(5)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        accent_label = QLabel()
+        accent_label.setStyleSheet(
+            f"background: {accent}; border-radius: 5px;"
+        )
+        accent_label.setFixedSize(10, 10)
         title_label = QLabel(title)
-        title_label.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 600;")
+        title_label.setStyleSheet(f"color: {COLORS['text-muted']}; font-size: 12px; font-weight: 600;")
+        title_row.addWidget(accent_label)
+        title_row.addWidget(title_label, 1)
+
         value_label = QLabel(value)
-        value_label.setStyleSheet("color: #f8fafc; font-size: 26px; font-weight: 800;")
-        layout.addWidget(title_label)
+        value_label.setStyleSheet(f"color: {COLORS['text-primary']}; font-size: 26px; font-weight: 800;")
+        layout.addLayout(title_row)
         layout.addWidget(value_label)
         return frame, value_label
 
     @staticmethod
-    def _configure_table(table: QTableWidget) -> None:
+    def _configure_table(table: QTableWidget, column_widths: list[int]) -> None:
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.SingleSelection)
         table.setShowGrid(False)
         header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(54)
+        for column, width in enumerate(column_widths):
+            table.setColumnWidth(column, width)
         table.verticalHeader().setVisible(False)
 
     def _create_chart_view(self, title: str) -> QChartView:
@@ -741,10 +677,10 @@ class StatisticsWindow(QMainWindow):
         chart.setTitle(title)
         chart.setBackgroundVisible(True)
         chart.setBackgroundRoundness(12)
-        chart.setBackgroundBrush(QColor("#111827"))
+        chart.setBackgroundBrush(QColor(COLORS["bg-shell"]))
         chart.setPlotAreaBackgroundVisible(True)
-        chart.setPlotAreaBackgroundBrush(QColor("#0b1220"))
-        chart.setTitleBrush(QColor("#f8fafc"))
+        chart.setPlotAreaBackgroundBrush(QColor(COLORS["bg-input"]))
+        chart.setTitleBrush(QColor(COLORS["text-primary"]))
         chart.legend().setVisible(False)
 
     @staticmethod
@@ -772,7 +708,15 @@ class StatisticsWindow(QMainWindow):
             return
         categories: list[str] = []
         values = QBarSet(title)
-        values.setColor(QColor("#38bdf8" if attribute == "unique_visits" else "#22c55e" if attribute == "current_occupancy" else "#f59e0b"))
+        values.setColor(
+            QColor(
+                COLORS["accent-blue"]
+                if attribute == "unique_visits"
+                else COLORS["accent-green"]
+                if attribute == "current_occupancy"
+                else COLORS["accent-amber"]
+            )
+        )
         values.setBorderColor(QColor("#00000000"))
         for row in rows:
             if isinstance(row, dict):
@@ -787,12 +731,12 @@ class StatisticsWindow(QMainWindow):
 
         axis_x = QBarCategoryAxis()
         axis_x.append(categories)
-        axis_x.setLabelsColor(QColor("#cbd5e1"))
+        axis_x.setLabelsColor(QColor(COLORS["text-muted"]))
         axis_x.setGridLineVisible(False)
 
         axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor("#cbd5e1"))
-        axis_y.setGridLineColor(QColor("#243041"))
+        axis_y.setLabelsColor(QColor(COLORS["text-muted"]))
+        axis_y.setGridLineColor(QColor(COLORS["border-strong"]))
         axis_y.setMinorGridLineVisible(False)
         axis_y.setLabelFormat("%d" if attribute in {"current_occupancy", "unique_visits", "peak_occupancy"} else "%.1f")
 
@@ -810,8 +754,8 @@ class StatisticsWindow(QMainWindow):
             return
         baseline = float(timeline[0]["ts"])
         series = QLineSeries()
-        series.setColor(QColor("#38bdf8"))
-        series.setPen(QPen(QColor("#38bdf8"), 2.2))
+        series.setColor(QColor(COLORS["accent-blue"]))
+        series.setPen(QPen(QColor(COLORS["accent-blue"]), 2.2))
         previous_value = float(timeline[0]["occupancy"])
         series.append(0.0, previous_value)
         for item in timeline[1:]:
@@ -824,15 +768,15 @@ class StatisticsWindow(QMainWindow):
 
         axis_x = QValueAxis()
         axis_x.setTitleText("Seconds since first snapshot")
-        axis_x.setTitleBrush(QColor("#94a3b8"))
-        axis_x.setLabelsColor(QColor("#cbd5e1"))
-        axis_x.setGridLineColor(QColor("#243041"))
+        axis_x.setTitleBrush(QColor(COLORS["text-subtle"]))
+        axis_x.setLabelsColor(QColor(COLORS["text-muted"]))
+        axis_x.setGridLineColor(QColor(COLORS["border-strong"]))
 
         axis_y = QValueAxis()
         axis_y.setTitleText("Occupancy")
-        axis_y.setTitleBrush(QColor("#94a3b8"))
-        axis_y.setLabelsColor(QColor("#cbd5e1"))
-        axis_y.setGridLineColor(QColor("#243041"))
+        axis_y.setTitleBrush(QColor(COLORS["text-subtle"]))
+        axis_y.setLabelsColor(QColor(COLORS["text-muted"]))
+        axis_y.setGridLineColor(QColor(COLORS["border-strong"]))
         axis_y.setLabelFormat("%d")
 
         chart.addAxis(axis_x, Qt.AlignBottom)

@@ -19,15 +19,23 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import (
-    compute_world_viewport,
     compute_homography_result,
     recompute_camera_coverage,
 )
-from core.coverage_mapping import default_coverage_polygon_image, propose_coverage_polygon_image
-from core.models import CameraAnchorObservation, CameraConfig, CameraCoverageOverlay, Point, ProjectConfig, SharedAnchor
+from core.coverage_mapping import propose_coverage_polygon_image
+from core.models import (
+    CameraAnchorObservation,
+    CameraConfig,
+    CameraCoverageOverlay,
+    Point,
+    ProjectConfig,
+    SharedAnchor,
+    WorldViewport,
+)
 from ui.canvas import ImageCanvas
 from ui.camera_colors import camera_color
 from ui.map_view import MapView
+from ui.style_system import apply_chrome
 
 
 class MultiCameraCalibrationDialog(QDialog):
@@ -47,11 +55,12 @@ class MultiCameraCalibrationDialog(QDialog):
         self._pending_image_point: Point | None = None
         self._current_anchor_order: list[str] = []
         self._selected_anchor_id: str | None = None
-        self._edit_mode = "anchors"
+        self._calibration_viewport_cache: WorldViewport | None = None
         self._build_ui()
         self._connect_signals()
         self._load_cameras()
         self._refresh_views()
+        apply_chrome(self)
 
     @property
     def project_config(self) -> ProjectConfig:
@@ -59,20 +68,22 @@ class MultiCameraCalibrationDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
 
+        title = QLabel("Calibration workspace")
+        title.setObjectName("SectionTitle")
         top_row = QHBoxLayout()
+        top_row.setSpacing(10)
         self.camera_combo = QComboBox()
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Anchors", "anchors")
-        self.mode_combo.addItem("Coverage", "coverage")
         self.camera_status_label = QLabel()
+        self.camera_status_label.setObjectName("MutedText")
         top_row.addWidget(QLabel("Camera"))
         top_row.addWidget(self.camera_combo)
-        top_row.addWidget(QLabel("Mode"))
-        top_row.addWidget(self.mode_combo)
         top_row.addWidget(self.camera_status_label, 1)
 
         body = QHBoxLayout()
+        body.setSpacing(10)
         self.image_canvas = ImageCanvas("No frame captured for this camera")
         self.image_canvas.set_add_enabled(True)
         self.image_canvas.set_drag_enabled(True)
@@ -81,43 +92,34 @@ class MultiCameraCalibrationDialog(QDialog):
         self.map_view.set_pick_points_mode(True)
 
         side = QVBoxLayout()
-        self.instructions = QLabel(
-            "1. Click a point in the camera image.\n"
-            "2. Click an existing anchor on the map or empty map space to create one.\n"
-            "3. Drag anchors or observations to refine them.\n"
-            "4. Compute calibration for the selected camera."
-        )
-        self.instructions.setWordWrap(True)
+        side.setSpacing(8)
         self.quality_label = QLabel("Calibration: not computed")
+        self.quality_label.setObjectName("MutedText")
         self.quality_label.setWordWrap(True)
         self.anchor_list = QListWidget()
-        self.compute_button = QPushButton("Compute selected camera")
-        self.remove_observation_button = QPushButton("Remove selected observation")
-        self.auto_detect_coverage_button = QPushButton("Auto-detect coverage")
-        self.reset_coverage_button = QPushButton("Reset to fallback")
-        self.accept_coverage_button = QPushButton("Accept coverage")
+        self.compute_button = QPushButton("Compute")
+        self.remove_observation_button = QPushButton("Remove anchor")
+        self.compute_button.setProperty("kind", "primary")
 
-        side.addWidget(self.instructions)
         side.addWidget(self.quality_label)
         side.addWidget(self.anchor_list, 1)
         side.addWidget(self.compute_button)
         side.addWidget(self.remove_observation_button)
-        side.addWidget(self.auto_detect_coverage_button)
-        side.addWidget(self.reset_coverage_button)
-        side.addWidget(self.accept_coverage_button)
 
         body.addWidget(self.image_canvas, 5)
         body.addWidget(self.map_view, 5)
-        body.addLayout(side, 3)
+        body.addLayout(side, 2)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.button(QDialogButtonBox.Ok).setProperty("kind", "primary")
+        self.button_box.button(QDialogButtonBox.Cancel).setProperty("kind", "danger")
+        root.addWidget(title)
         root.addLayout(top_row)
         root.addLayout(body, 1)
         root.addWidget(self.button_box)
 
     def _connect_signals(self) -> None:
         self.camera_combo.currentIndexChanged.connect(self._on_camera_changed)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.image_canvas.point_added.connect(self._on_image_point_added)
         self.image_canvas.point_moved.connect(self._on_image_point_moved)
         self.image_canvas.point_deleted.connect(self._on_image_point_deleted)
@@ -131,9 +133,6 @@ class MultiCameraCalibrationDialog(QDialog):
         self.anchor_list.currentRowChanged.connect(self._on_anchor_list_row_changed)
         self.compute_button.clicked.connect(self._compute_selected_camera)
         self.remove_observation_button.clicked.connect(self._remove_selected_observation)
-        self.auto_detect_coverage_button.clicked.connect(self._auto_detect_coverage)
-        self.reset_coverage_button.clicked.connect(self._reset_coverage_to_fallback)
-        self.accept_coverage_button.clicked.connect(self._accept_coverage)
         self.button_box.accepted.connect(self._accept)
         self.button_box.rejected.connect(self.reject)
 
@@ -162,21 +161,15 @@ class MultiCameraCalibrationDialog(QDialog):
             self._apply_coverage_proposal(camera, frame, auto_generated=True)
             self._recompute_selected_camera_coverage()
         self.image_canvas.set_image(frame)
-        self.image_canvas.set_polygon_mode(self._edit_mode == "coverage")
+        self.image_canvas.set_polygon_mode(False)
         self.image_canvas.set_add_enabled(True)
         self.image_canvas.set_drag_enabled(True)
         self.image_canvas.set_delete_enabled(True)
-        self.map_view.set_pick_points_mode(self._edit_mode == "anchors")
+        self.map_view.set_pick_points_mode(True)
 
         anchor_points = [anchor.world_point for anchor in self._project.shared_anchors]
         self.map_view.set_venue_map(self._project.venue_map)
-        self.map_view.set_world_viewport(
-            compute_world_viewport(
-                self._project.cameras,
-                self._project.venue_map.zones,
-                manual_override=self._project.venue_map.manual_viewport_override,
-            )
-        )
+        self.map_view.set_world_viewport(self._calibration_viewport())
         self.map_view.set_calibration_points(anchor_points)
         self.map_view.set_camera_overlaps([])
         self.map_view.set_camera_coverages(self._coverage_overlays_for(camera))
@@ -203,12 +196,8 @@ class MultiCameraCalibrationDialog(QDialog):
                 self.anchor_list.setCurrentItem(item)
         self.anchor_list.blockSignals(False)
 
-        coverage_points = list(camera.coverage_polygon_image or [])
-        if self._edit_mode == "coverage":
-            self.image_canvas.set_editable_points(coverage_points)
-        else:
-            self.image_canvas.set_editable_points(image_points)
-        self.image_canvas.set_pending_point(self._pending_image_point if self._edit_mode == "anchors" else None)
+        self.image_canvas.set_editable_points(image_points)
+        self.image_canvas.set_pending_point(self._pending_image_point)
         image_index = next(
             (index for index, item in enumerate(self._current_anchor_order) if item == self._selected_anchor_id),
             None,
@@ -217,20 +206,10 @@ class MultiCameraCalibrationDialog(QDialog):
             (index for index, anchor in enumerate(self._project.shared_anchors) if anchor.anchor_id == self._selected_anchor_id),
             None,
         )
-        self.image_canvas.set_selected_point(image_index if self._edit_mode == "anchors" else None)
+        self.image_canvas.set_selected_point(image_index)
         self.map_view.set_selected_calibration_point(shared_index)
         self.camera_status_label.setText(
-            f"Anchors: {len(self._project.shared_anchors)} | Observations: {len(camera.anchor_observations)} | "
-            f"Coverage points: {len(coverage_points)}"
-        )
-        is_anchor_mode = self._edit_mode == "anchors"
-        self.anchor_list.setEnabled(is_anchor_mode)
-        self.compute_button.setEnabled(is_anchor_mode)
-        self.auto_detect_coverage_button.setEnabled(frame is not None)
-        self.reset_coverage_button.setEnabled(frame is not None)
-        self.accept_coverage_button.setEnabled(self._edit_mode == "coverage")
-        self.remove_observation_button.setText(
-            "Remove selected observation" if is_anchor_mode else "Delete selected coverage vertex"
+            f"{len(camera.anchor_observations)} observations | {len(self._project.shared_anchors)} anchors"
         )
         self.quality_label.setText(self._calibration_status_text(camera))
 
@@ -244,32 +223,13 @@ class MultiCameraCalibrationDialog(QDialog):
         self._selected_anchor_id = None
         self._refresh_views()
 
-    @Slot()
-    def _on_mode_changed(self) -> None:
-        self._edit_mode = str(self.mode_combo.currentData() or "anchors")
-        self._clear_pending_point()
-        self._refresh_views()
-
     @Slot(float, float)
     def _on_image_point_added(self, x: float, y: float) -> None:
-        if self._edit_mode == "coverage":
-            camera = self._selected_camera()
-            if camera is None:
-                return
-            polygon = list(camera.coverage_polygon_image or [])
-            polygon.append((x, y))
-            camera.coverage_polygon_image = polygon
-            camera.coverage_auto_generated = False
-            self._recompute_selected_camera_coverage()
-            self._refresh_views()
-            return
         self._pending_image_point = (x, y)
         self.image_canvas.set_pending_point(self._pending_image_point)
 
     @Slot(object)
     def _on_image_selection_changed(self, index: object) -> None:
-        if self._edit_mode == "coverage":
-            return
         if isinstance(index, int) and 0 <= index < len(self._current_anchor_order):
             anchor_id = self._current_anchor_order[index]
             self._selected_anchor_id = anchor_id
@@ -279,8 +239,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(float, float)
     def _on_map_empty_clicked(self, world_x: float, world_y: float) -> None:
-        if self._edit_mode != "anchors":
-            return
         if self._pending_image_point is None:
             return
         anchor_id = f"anchor-{len(self._project.shared_anchors) + 1:03d}"
@@ -292,8 +250,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(object)
     def _on_anchor_selected(self, index: object) -> None:
-        if self._edit_mode != "anchors":
-            return
         if not isinstance(index, int) or index < 0 or index >= len(self._project.shared_anchors):
             return
         anchor = self._project.shared_anchors[index]
@@ -320,8 +276,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int, float, float)
     def _on_anchor_moved(self, index: int, x: float, y: float) -> None:
-        if self._edit_mode != "anchors":
-            return
         if index < 0 or index >= len(self._project.shared_anchors):
             return
         self._project.shared_anchors[index].world_point = (x, y)
@@ -330,8 +284,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int)
     def _on_anchor_deleted(self, index: int) -> None:
-        if self._edit_mode != "anchors":
-            return
         if index < 0 or index >= len(self._project.shared_anchors):
             return
         anchor_id = self._project.shared_anchors[index].anchor_id
@@ -344,19 +296,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int, float, float)
     def _on_image_point_moved(self, index: int, x: float, y: float) -> None:
-        if self._edit_mode == "coverage":
-            camera = self._selected_camera()
-            if camera is None:
-                return
-            polygon = list(camera.coverage_polygon_image or [])
-            if index < 0 or index >= len(polygon):
-                return
-            polygon[index] = (x, y)
-            camera.coverage_polygon_image = polygon
-            camera.coverage_auto_generated = False
-            self._recompute_selected_camera_coverage()
-            self._refresh_views()
-            return
         if index < 0 or index >= len(self._current_anchor_order):
             return
         anchor_id = self._current_anchor_order[index]
@@ -366,19 +305,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int)
     def _on_image_point_deleted(self, index: int) -> None:
-        if self._edit_mode == "coverage":
-            camera = self._selected_camera()
-            if camera is None:
-                return
-            polygon = list(camera.coverage_polygon_image or [])
-            if index < 0 or index >= len(polygon):
-                return
-            del polygon[index]
-            camera.coverage_polygon_image = polygon or None
-            camera.coverage_auto_generated = False
-            self._recompute_selected_camera_coverage()
-            self._refresh_views()
-            return
         if index < 0 or index >= len(self._current_anchor_order):
             return
         self._remove_observation(self._current_anchor_order[index])
@@ -386,8 +312,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot(int)
     def _on_anchor_list_row_changed(self, row: int) -> None:
-        if self._edit_mode != "anchors":
-            return
         if row < 0 or row >= self.anchor_list.count():
             self._selected_anchor_id = None
             self.map_view.set_selected_calibration_point(None)
@@ -408,12 +332,6 @@ class MultiCameraCalibrationDialog(QDialog):
 
     @Slot()
     def _remove_selected_observation(self) -> None:
-        if self._edit_mode == "coverage":
-            selected = self.image_canvas.selected_point()
-            if selected is None:
-                return
-            self._on_image_point_deleted(selected)
-            return
         row = self.anchor_list.currentRow()
         if row < 0:
             return
@@ -502,32 +420,57 @@ class MultiCameraCalibrationDialog(QDialog):
             )
         ]
 
-    def _calibration_status_text(self, camera: CameraConfig) -> str:
-        projected = "yes" if camera.coverage_polygon_world else "no"
-        coverage_confidence = (
-            f"{camera.coverage_confidence:.2f}"
-            if camera.coverage_confidence is not None
-            else "n/a"
+    def _calibration_viewport(self) -> WorldViewport:
+        if self._calibration_viewport_cache is None:
+            self._calibration_viewport_cache = self._build_initial_calibration_viewport()
+        return self._calibration_viewport_cache
+
+    def _build_initial_calibration_viewport(self) -> WorldViewport:
+        if self._project.venue_map.manual_viewport_override is not None:
+            return self._project.venue_map.manual_viewport_override
+
+        points: list[Point] = []
+        for zone in self._project.venue_map.zones:
+            points.extend(zone.polygon_world)
+        if not points:
+            points = [anchor.world_point for anchor in self._project.shared_anchors]
+        if not points:
+            return WorldViewport()
+
+        return self._viewport_from_points(points)
+
+    @staticmethod
+    def _viewport_from_points(points: list[Point]) -> WorldViewport:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+        pad_x = span_x * 0.12
+        pad_y = span_y * 0.12
+        return WorldViewport(
+            min_x=min_x - pad_x,
+            min_y=min_y - pad_y,
+            max_x=max_x + pad_x,
+            max_y=max_y + pad_y,
         )
+
+    def _calibration_status_text(self, camera: CameraConfig) -> str:
         rmse_text = (
             f"{camera.calibration_rmse_px:.1f}px"
             if camera.calibration_rmse_px is not None
             else "n/a"
         )
-        max_error = (
-            f"{camera.calibration_max_error_px:.1f}px"
-            if camera.calibration_max_error_px is not None
-            else "n/a"
-        )
-        warnings = camera.calibration_warning_text or "none"
-        validity = "valid" if camera.calibration_valid else "needs review"
+        status = "Valid" if camera.calibration_valid else "Needs compute"
+        warning = f"\n{camera.calibration_warning_text}" if camera.calibration_warning_text else ""
         return (
-            f"Calibration: {validity}\n"
-            f"RMSE: {rmse_text}\n"
-            f"Max error: {max_error}\n"
-            f"Projected coverage valid: {projected}\n"
-            f"Coverage confidence: {coverage_confidence}\n"
-            f"Warnings: {warnings}"
+            f"{status}\n"
+            f"Anchors: {len(camera.anchor_observations)}/4 minimum\n"
+            f"RMSE: {rmse_text}"
+            f"{warning}"
         )
 
     @staticmethod
@@ -569,40 +512,10 @@ class MultiCameraCalibrationDialog(QDialog):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
+        if self._project.venue_map.manual_viewport_override is None:
+            self._project.venue_map.manual_viewport_override = self._calibration_viewport()
         self.calibration_applied.emit(self.project_config)
         self.accept()
-
-    @Slot()
-    def _auto_detect_coverage(self) -> None:
-        camera = self._selected_camera()
-        frame = self._camera_frames.get(camera.camera_id) if camera is not None else None
-        if camera is None or frame is None:
-            return
-        self._apply_coverage_proposal(camera, frame, auto_generated=True)
-        self._recompute_selected_camera_coverage()
-        self._refresh_views()
-
-    @Slot()
-    def _reset_coverage_to_fallback(self) -> None:
-        camera = self._selected_camera()
-        frame = self._camera_frames.get(camera.camera_id) if camera is not None else None
-        if camera is None or frame is None:
-            return
-        camera.coverage_polygon_image = default_coverage_polygon_image(frame.width(), frame.height())
-        camera.coverage_auto_generated = False
-        camera.coverage_confidence = 0.25
-        camera.coverage_warning_text = "Coverage reset to fallback polygon."
-        self._recompute_selected_camera_coverage()
-        self._refresh_views()
-
-    @Slot()
-    def _accept_coverage(self) -> None:
-        camera = self._selected_camera()
-        if camera is None:
-            return
-        camera.coverage_auto_generated = False
-        self._recompute_selected_camera_coverage()
-        self._refresh_views()
 
     def _apply_coverage_proposal(self, camera: CameraConfig, frame: QImage, *, auto_generated: bool) -> None:
         frame_bgr = self._qimage_to_bgr(frame)

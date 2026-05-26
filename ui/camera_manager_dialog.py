@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from core.camera_overlap import build_camera_overlap_graph
 from core.model_catalog import available_detection_models
 from core.models import CameraConfig, OverlapDedupConfig
+from ui.style_system import apply_chrome
 
 
 class CameraEditorDialog(QDialog):
@@ -45,6 +46,7 @@ class CameraEditorDialog(QDialog):
         self._build_ui()
         self._load_values()
         self._update_source_controls()
+        apply_chrome(self)
 
     @property
     def camera_config(self) -> CameraConfig:
@@ -52,7 +54,18 @@ class CameraEditorDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
+
+        title = QLabel("Camera setup")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel(
+            "Define runtime mode, source, and possible overlap neighbors for one camera at a time."
+        )
+        subtitle.setObjectName("SectionSubtitle")
+        subtitle.setWordWrap(True)
         form = QFormLayout()
+        form.setSpacing(12)
 
         self.enabled_checkbox = QCheckBox("Enabled")
         self.camera_id_input = QLineEdit()
@@ -106,9 +119,14 @@ class CameraEditorDialog(QDialog):
         helper = QLabel(
             "Overlap cameras only define where double-count suppression may happen. Calibration and booth mapping are handled elsewhere."
         )
+        helper.setObjectName("HintText")
         helper.setWordWrap(True)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.button_box.button(QDialogButtonBox.Ok).setProperty("kind", "primary")
+        self.button_box.button(QDialogButtonBox.Cancel).setProperty("kind", "danger")
+        root.addWidget(title)
+        root.addWidget(subtitle)
         root.addLayout(form)
         root.addWidget(helper)
         root.addWidget(self.button_box)
@@ -207,6 +225,7 @@ class CameraManagerDialog(QDialog):
         self._detector_models = available_detection_models(project_root)
         self._build_ui()
         self._refresh_list()
+        apply_chrome(self)
 
     @property
     def cameras(self) -> list[CameraConfig]:
@@ -214,7 +233,18 @@ class CameraManagerDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
+
+        title = QLabel("Camera manager")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel(
+            "Build the camera lineup, adjust ordering, and inspect overlap adjacency before you return to the live workspace."
+        )
+        subtitle.setObjectName("SectionSubtitle")
+        subtitle.setWordWrap(True)
         content = QHBoxLayout()
+        content.setSpacing(14)
         self.camera_list = QListWidget()
         content.addWidget(self.camera_list, 1)
 
@@ -238,12 +268,19 @@ class CameraManagerDialog(QDialog):
         self.helper_label = QLabel(
             "Configure only source assignment and overlap topology here. Detection, tracking, and ReID run with internal product defaults."
         )
+        self.helper_label.setObjectName("HintText")
         self.helper_label.setWordWrap(True)
         self.overlap_status_label = QLabel("Auto overlap: no calibrated adjacent cameras yet")
+        self.overlap_status_label.setObjectName("MutedText")
         self.overlap_status_label.setWordWrap(True)
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Apply)
+        self.button_box.button(QDialogButtonBox.Ok).setProperty("kind", "primary")
+        self.button_box.button(QDialogButtonBox.Apply).setProperty("kind", "primary")
+        self.button_box.button(QDialogButtonBox.Cancel).setProperty("kind", "danger")
 
+        root.addWidget(title)
+        root.addWidget(subtitle)
         root.addLayout(content, 1)
         root.addWidget(self.helper_label)
         root.addWidget(self.overlap_status_label)

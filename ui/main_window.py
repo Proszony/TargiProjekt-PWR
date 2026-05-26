@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QImage
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -31,7 +32,9 @@ from core.models import (
     CameraOverlapOverlay,
     CameraConfig,
     MultiCameraRuntimeSnapshot,
+    Point,
     ProjectConfig,
+    WorldViewport,
     ZoneDefinition,
 )
 from core.multi_camera_runtime import MultiCameraPipelineManager
@@ -69,64 +72,128 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._refresh_from_project()
+        self.statusBar().hide()
         self.update_status("Idle")
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Fair Monitor | Booth Analytics")
         self.resize(1800, 1000)
+        self._apply_window_style()
 
         central = QWidget(self)
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 8)
+        root.setSpacing(8)
 
         self.settings_button = QPushButton("Settings")
         self.start_button = QPushButton("Start all")
         self.stop_button = QPushButton("Stop all")
         self.stop_button.setEnabled(False)
         self.load_map_button = QPushButton("Load map")
-        self.manage_cameras_button = QPushButton("Manage cameras")
-        self.calibrate_button = QPushButton("Calibrate cameras")
+        self.manage_cameras_button = QPushButton("Cameras")
+        self.calibrate_button = QPushButton("Calibrate")
         self.add_zone_button = QPushButton("Add zone")
-        self.delete_zone_button = QPushButton("Delete selected zone")
+        self.delete_zone_button = QPushButton("Delete zone")
         self.save_config_button = QPushButton("Save config")
         self.export_button = QPushButton("Export")
-        self.statistics_button = QPushButton("Statistics")
+        self.statistics_button = QPushButton("Analytics")
+        self.map_coverage_button = self._build_toggle_button("Coverage", checked=True)
+        self.map_overlap_button = self._build_toggle_button("Overlap", checked=True)
+        self.map_people_button = self._build_toggle_button("People", checked=True)
 
-        toolbar = QHBoxLayout()
+        self.start_button.setProperty("kind", "primary")
+        self.stop_button.setProperty("kind", "danger")
+
+        command_bar = QFrame()
+        command_bar.setObjectName("commandBar")
+        command_layout = QHBoxLayout(command_bar)
+        command_layout.setContentsMargins(12, 8, 12, 8)
+        command_layout.setSpacing(12)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(6)
+        (
+            self.booths_metric_value,
+            self.booths_metric_detail,
+        ) = self._build_metric_chip(metrics_row, "Booths")
+        (
+            self.occupancy_metric_value,
+            self.occupancy_metric_detail,
+        ) = self._build_metric_chip(metrics_row, "Now")
+        (
+            self.visits_metric_value,
+            self.visits_metric_detail,
+        ) = self._build_metric_chip(metrics_row, "Visits")
+        (
+            self.time_metric_value,
+            self.time_metric_detail,
+        ) = self._build_metric_chip(metrics_row, "Time")
+        (
+            self.fps_metric_value,
+            self.fps_metric_detail,
+        ) = self._build_metric_chip(metrics_row, "FPS")
+
+        command_layout.addLayout(metrics_row)
+        command_layout.addStretch(1)
         for button in (
-            self.settings_button,
             self.start_button,
             self.stop_button,
-            self.load_map_button,
+            self.statistics_button,
             self.manage_cameras_button,
             self.calibrate_button,
+            self.load_map_button,
             self.add_zone_button,
             self.delete_zone_button,
             self.save_config_button,
             self.export_button,
-            self.statistics_button,
+            self.settings_button,
         ):
-            toolbar.addWidget(button)
-        toolbar.addStretch(1)
+            command_layout.addWidget(button)
 
         self.camera_grid = CameraGridView()
         self.map_view = MapView()
+        self.map_view.set_show_coverages(self.map_coverage_button.isChecked())
+        self.map_view.set_show_overlaps(self.map_overlap_button.isChecked())
+        self.map_view.set_show_tracks(self.map_people_button.isChecked())
+
+        camera_workspace = QFrame()
+        camera_workspace.setObjectName("workspacePanel")
+        camera_layout = QVBoxLayout(camera_workspace)
+        camera_layout.setContentsMargins(8, 8, 8, 8)
+        camera_layout.setSpacing(6)
+        self.camera_focus_label = QLabel("No camera selected")
+        self.camera_focus_label.setObjectName("panelMeta")
+        camera_layout.addWidget(self.camera_focus_label, 0, Qt.AlignRight)
+        camera_layout.addWidget(self.camera_grid, 1)
+
+        map_workspace = QFrame()
+        map_workspace.setObjectName("workspacePanel")
+        map_layout = QVBoxLayout(map_workspace)
+        map_layout.setContentsMargins(8, 8, 8, 8)
+        map_layout.setSpacing(6)
+        self.map_focus_label = QLabel("Focus follows the selected camera")
+        self.map_focus_label.setObjectName("panelMeta")
+
+        map_controls = QHBoxLayout()
+        map_controls.setSpacing(6)
+        map_controls.addWidget(self.map_coverage_button)
+        map_controls.addWidget(self.map_overlap_button)
+        map_controls.addWidget(self.map_people_button)
+        map_controls.addStretch(1)
+        map_controls.addWidget(self.map_focus_label)
+        map_layout.addLayout(map_controls)
+        map_layout.addWidget(self.map_view, 1)
+
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.camera_grid)
-        self.splitter.addWidget(self.map_view)
-        self.splitter.setSizes([900, 1100])
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(camera_workspace)
+        self.splitter.addWidget(map_workspace)
+        self.splitter.setSizes([1060, 840])
 
-        self.zone_stats_label = QLabel("Booth occupancy: no zones configured")
-        self.tracks_stats_label = QLabel("Current occupancy: 0 | Visits: 0")
-        self.fps_label = QLabel("Aggregate FPS: 0.0")
-        info_row = QHBoxLayout()
-        info_row.addWidget(self.zone_stats_label, 1)
-        info_row.addWidget(self.tracks_stats_label)
-        info_row.addWidget(self.fps_label)
-
-        root.addLayout(toolbar)
+        root.addWidget(command_bar)
         root.addWidget(self.splitter, 1)
-        root.addLayout(info_row)
 
         exit_fullscreen = QAction(self)
         exit_fullscreen.setShortcut(Qt.Key_Escape)
@@ -137,6 +204,209 @@ class MainWindow(QMainWindow):
         toggle_fullscreen.setShortcut(Qt.Key_F11)
         toggle_fullscreen.triggered.connect(self.toggle_fullscreen)
         self.addAction(toggle_fullscreen)
+
+    def _apply_window_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget#appRoot {
+                background: #071018;
+                color: #e7eef5;
+            }
+            QFrame#commandBar, QFrame#workspacePanel, QFrame#metricChip,
+            QFrame#toolbarGroup, QFrame#cameraRail, QFrame#cameraStage {
+                background: #0d1721;
+                border: 1px solid #1f3141;
+                border-radius: 10px;
+            }
+            QFrame#toolbarGroup {
+                background: #0a131b;
+                border-radius: 14px;
+                padding: 0;
+            }
+            QLabel#toolbarGroupTitle {
+                color: #9fb1c0;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+            QPushButton {
+                background: #132230;
+                border: 1px solid #23394b;
+                border-radius: 8px;
+                color: #eef3f8;
+                padding: 7px 10px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #182b3b;
+                border-color: #2d5369;
+            }
+            QPushButton:pressed {
+                background: #0f1d29;
+            }
+            QPushButton[kind="primary"] {
+                background: #7de3e1;
+                color: #06222b;
+                border-color: #7de3e1;
+            }
+            QPushButton[kind="primary"]:hover {
+                background: #98edeb;
+                border-color: #98edeb;
+            }
+            QPushButton[kind="danger"] {
+                background: #4d1820;
+                color: #ffdbe0;
+                border-color: #7a2b3a;
+            }
+            QPushButton[kind="danger"]:hover {
+                background: #61202a;
+            }
+            QPushButton:disabled {
+                color: #6d8091;
+                background: #101923;
+                border-color: #192734;
+            }
+            QPushButton#mapToggle {
+                min-width: 72px;
+                padding: 7px 10px;
+            }
+            QPushButton#mapToggle:checked {
+                background: #1a3040;
+                border-color: #75d3e0;
+                color: #dff8fb;
+            }
+            QFrame#metricChip {
+                background: #0a131b;
+                border-radius: 8px;
+                min-width: 112px;
+            }
+            QLabel#metricTitle {
+                color: #89a0b2;
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+            }
+            QLabel#metricValue {
+                color: #f2f7fb;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#metricDetail {
+                color: #9fb1c0;
+                font-size: 10px;
+            }
+            QLabel#panelTitle {
+                color: #f2f7fb;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            QLabel#panelSubtitle, QLabel#panelMeta {
+                color: #9fb1c0;
+                font-size: 12px;
+            }
+            QLabel#cameraRailTitle, QLabel#cameraStageTitle {
+                color: #f2f7fb;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#cameraRailHint, QLabel#cameraStageSubtitle, QLabel#cameraStageMeta {
+                color: #90a5b6;
+                font-size: 12px;
+            }
+            QLabel#cameraStageImage {
+                background: #071018;
+                border: 1px solid #1f3141;
+                border-radius: 8px;
+                color: #9fb1c0;
+            }
+            QLabel#cameraStageBadge {
+                background: #112130;
+                border-radius: 12px;
+                color: #dce7f0;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 6px 12px;
+            }
+            QPushButton#cameraSelector {
+                text-align: left;
+                padding: 8px 10px;
+                font-size: 12px;
+                line-height: 1.35;
+            }
+            QPushButton#cameraSelector:checked {
+                background: #172b3a;
+                border-color: #75d3e0;
+                color: #f2fbfd;
+            }
+            QScrollArea {
+                border: 0;
+                background: transparent;
+            }
+            QSplitter::handle {
+                background: #071018;
+                width: 10px;
+            }
+            """
+        )
+
+    def _build_action_group(self, title: str, *buttons: QPushButton) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("toolbarGroup")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
+        label = QLabel(title)
+        label.setObjectName("toolbarGroupTitle")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for button in buttons:
+            row.addWidget(button)
+        row.addStretch(1)
+        layout.addWidget(label)
+        layout.addLayout(row)
+        return frame
+
+    def _build_metric_chip(self, parent_layout: QHBoxLayout, title: str) -> tuple[QLabel, QLabel]:
+        frame = QFrame()
+        frame.setObjectName("metricChip")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(1)
+        title_label = QLabel(title)
+        title_label.setObjectName("metricTitle")
+        value_label = QLabel("0")
+        value_label.setObjectName("metricValue")
+        detail_label = QLabel("")
+        detail_label.setObjectName("metricDetail")
+        detail_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addWidget(detail_label)
+        parent_layout.addWidget(frame, 1)
+        return value_label, detail_label
+
+    def _build_panel_heading(self, title: str, subtitle: str) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.setSpacing(12)
+        text_stack = QVBoxLayout()
+        text_stack.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setObjectName("panelTitle")
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("panelSubtitle")
+        subtitle_label.setWordWrap(True)
+        text_stack.addWidget(title_label)
+        text_stack.addWidget(subtitle_label)
+        layout.addLayout(text_stack, 1)
+        return layout
+
+    def _build_toggle_button(self, text: str, *, checked: bool) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("mapToggle")
+        button.setCheckable(True)
+        button.setChecked(checked)
+        return button
 
     def _connect_signals(self) -> None:
         self.settings_button.clicked.connect(self.open_settings_dialog)
@@ -150,6 +420,10 @@ class MainWindow(QMainWindow):
         self.save_config_button.clicked.connect(self.save_configuration)
         self.export_button.clicked.connect(self.export_statistics)
         self.statistics_button.clicked.connect(self.open_statistics_window)
+        self.camera_grid.camera_selected.connect(self._handle_camera_selected)
+        self.map_coverage_button.toggled.connect(self.map_view.set_show_coverages)
+        self.map_overlap_button.toggled.connect(self.map_view.set_show_overlaps)
+        self.map_people_button.toggled.connect(self.map_view.set_show_tracks)
         self.map_view.zone_created.connect(self._handle_zone_created)
         self.map_view.zone_updated.connect(self._handle_zone_updated)
         self.map_view.zone_edit_cancelled.connect(self._handle_zone_edit_cancelled)
@@ -255,11 +529,20 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def update_camera_status(self, camera_id: str, text: str) -> None:
         self.camera_grid.update_status(camera_id, text)
+        if self.camera_grid.selected_camera_id() == camera_id:
+            self._sync_selected_camera_context()
 
     @Slot(str, float)
     def update_camera_fps(self, camera_id: str, fps: float) -> None:
         self.camera_grid.update_fps(camera_id, fps)
+        if self.camera_grid.selected_camera_id() == camera_id:
+            self._sync_selected_camera_context()
         self._schedule_runtime_presentation()
+
+    @Slot(str)
+    def _handle_camera_selected(self, camera_id: str) -> None:
+        self.map_view.set_focused_camera(camera_id)
+        self._sync_selected_camera_context()
 
     @Slot(object)
     def update_analytics(self, snapshot: object) -> None:
@@ -292,6 +575,7 @@ class MainWindow(QMainWindow):
                 source_fps=packet.source_fps if packet is not None else None,
                 processing_latency_s=packet.processing_latency_s if packet is not None else None,
             )
+        self._sync_selected_camera_context()
         self.statistics_window.set_runtime_snapshot(snapshot)
         self._schedule_runtime_presentation()
 
@@ -302,6 +586,8 @@ class MainWindow(QMainWindow):
             print(f"Worker error: {full_message}", file=sys.stderr)
         self._last_error = full_message
         self.camera_grid.update_status(camera_id, f"Error: {message}")
+        if self.camera_grid.selected_camera_id() == camera_id:
+            self._sync_selected_camera_context()
         self.statusBar().showMessage(f"Error: {full_message}")
 
     @Slot(str)
@@ -443,7 +729,25 @@ class MainWindow(QMainWindow):
         self.map_view.set_snapshot(self.last_snapshot)
         self.map_view.set_camera_coverages(self._build_camera_coverages())
         self.map_view.set_camera_overlaps(self._build_camera_overlap_overlays())
+        self._sync_selected_camera_context()
         self._schedule_runtime_presentation(force=True)
+
+    def _sync_selected_camera_context(self) -> None:
+        state = self.camera_grid.selected_camera_state()
+        if state is None:
+            self.camera_focus_label.setText("No camera selected")
+            self.map_focus_label.setText("Focus follows the selected camera")
+            self.fps_metric_value.setText("0.0")
+            self.fps_metric_detail.setText("no camera")
+            self.map_view.set_focused_camera(None)
+            return
+        self.camera_focus_label.setText(
+            f"Focused feed: {state.name} | {state.status_text} | {state.fps:.1f} FPS"
+        )
+        self.map_focus_label.setText(f"Coverage focus: {state.name}")
+        self.fps_metric_value.setText(f"{state.fps:.1f}")
+        self.fps_metric_detail.setText(state.name)
+        self.map_view.set_focused_camera(state.camera_id)
 
     def _build_camera_overlap_overlays(self) -> list[CameraOverlapOverlay]:
         overlap_graph = build_camera_overlap_graph(self.project_config.cameras, self.project_config.overlap_dedup)
@@ -482,10 +786,44 @@ class MainWindow(QMainWindow):
         ]
 
     def _build_world_viewport(self):
+        zone_polygons = [
+            zone.polygon_world
+            for zone in self.project_config.venue_map.zones
+            if len(zone.polygon_world) >= 3
+        ]
+        if zone_polygons or self.project_config.venue_map.manual_viewport_override is not None:
+            return compute_world_viewport(
+                [],
+                self.project_config.venue_map.zones,
+                padding_ratio=0.12,
+                manual_override=self.project_config.venue_map.manual_viewport_override,
+            )
+        anchor_points = [anchor.world_point for anchor in self.project_config.shared_anchors]
+        if anchor_points:
+            return self._viewport_from_points(anchor_points)
         return compute_world_viewport(
             self.project_config.cameras,
             self.project_config.venue_map.zones,
             manual_override=self.project_config.venue_map.manual_viewport_override,
+        )
+
+    @staticmethod
+    def _viewport_from_points(points: list[Point]) -> WorldViewport:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+        pad_x = span_x * 0.12
+        pad_y = span_y * 0.12
+        return WorldViewport(
+            min_x=min_x - pad_x,
+            min_y=min_y - pad_y,
+            max_x=max_x + pad_x,
+            max_y=max_y + pad_y,
         )
 
     def _calibration_summary_suffix(self) -> str:
@@ -502,11 +840,30 @@ class MainWindow(QMainWindow):
         return f" | Calibration: {preview}"
 
     def _refresh_runtime_summary_labels(self) -> None:
-        occupancy = ", ".join(
-            f"{zone.name}: {self.last_snapshot.active_zone_counts.get(zone.zone_id, 0)}"
-            for zone in self.project_config.venue_map.zones
-        )
-        self.zone_stats_label.setText(f"Booth occupancy: {occupancy or 'no zones configured'}")
+        zone_count = len(self.project_config.venue_map.zones)
+        active_booths = sum(1 for count in self.last_snapshot.active_zone_counts.values() if count > 0)
+        mean_avg_time = 0.0
+        non_zero_avg = [value for value in self.last_snapshot.avg_dwell_times.values() if value > 0.0]
+        if non_zero_avg:
+            mean_avg_time = sum(non_zero_avg) / len(non_zero_avg)
+        total_drops = sum(self.last_runtime_snapshot.dropped_frames_by_camera.values())
+        enabled_cameras = sum(1 for camera in self.project_config.cameras if camera.enabled)
+        selected_state = self.camera_grid.selected_camera_state()
+
+        self.booths_metric_value.setText(f"{active_booths}/{zone_count or 0}")
+        self.booths_metric_detail.setText("active")
+        self.occupancy_metric_value.setText(str(self.last_snapshot.total_current_occupancy))
+        self.occupancy_metric_detail.setText("people")
+        self.visits_metric_value.setText(str(self.last_snapshot.total_entries))
+        self.visits_metric_detail.setText("entries")
+        self.time_metric_value.setText(f"{mean_avg_time:.1f}s")
+        self.time_metric_detail.setText("average")
+        if selected_state is None:
+            self.fps_metric_value.setText("0.0")
+            self.fps_metric_detail.setText(f"{enabled_cameras} cams | {total_drops} drops")
+        else:
+            self.fps_metric_value.setText(f"{selected_state.fps:.1f}")
+            self.fps_metric_detail.setText(selected_state.name)
 
     def _schedule_runtime_presentation(self, *, force: bool = False) -> None:
         presentation = self._runtime_presenter.submit(
@@ -536,9 +893,6 @@ class MainWindow(QMainWindow):
 
     def _apply_runtime_presentation(self, presentation) -> None:
         self._refresh_runtime_summary_labels()
-        self.tracks_stats_label.setText(presentation.tracks_stats_text)
-        self.fps_label.setText(presentation.fps_text)
-        self.statusBar().showMessage(presentation.status_bar_text)
 
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running)
