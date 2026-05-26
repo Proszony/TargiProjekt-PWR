@@ -159,7 +159,7 @@ class CameraEditorDialog(QDialog):
         file_mode = self.source_type_combo.currentData() == "file"
         remote_mode = self.runtime_mode_combo.currentData() == "remote"
         self.remote_worker_id_input.setEnabled(remote_mode)
-        self.browse_source_button.setVisible(file_mode and not remote_mode)
+        self.browse_source_button.setVisible(file_mode)
         self.loop_file_checkbox.setVisible(file_mode)
 
     @Slot()
