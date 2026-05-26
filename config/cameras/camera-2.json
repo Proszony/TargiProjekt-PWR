@@ -5,23 +5,23 @@
   "source_type": "file",
   "source_value": "/home/zelgith/Downloads/prawa.mp4",
   "loop_file": false,
-  "runtime_mode": "remote",
+  "runtime_mode": "local",
   "enabled": true,
-  "remote_worker_id": "cachyos-x8664",
+  "detector_model_path": "models/yolo26m.pt",
   "homography_image_to_world": [
     [
-      0.02990127672611967,
-      0.04084330413574212,
-      -33.863765351073035
+      0.004837876091035263,
+      0.024314139284257852,
+      -7.544832424245065
     ],
     [
-      -0.006415573014737216,
-      0.10031612144797715,
-      -29.136293122430462
+      -0.008040209283519664,
+      0.04185114964968761,
+      -5.187386008576861
     ],
     [
-      0.00026643497149402077,
-      0.0034099380167340433,
+      -0.0006406395919600243,
+      0.0026492584794790886,
       1.0
     ]
   ],
@@ -59,5 +59,79 @@
       878.7155720338983
     ]
   ],
-  "calibration_valid": true
+  "calibration_rmse_px": 70.59801309571124,
+  "calibration_max_error_px": 136.66131225832905,
+  "calibration_valid": true,
+  "anchor_observations": [
+    {
+      "anchor_id": "anchor-001",
+      "image_point": [
+        966.8303571428571,
+        353.66517857142856
+      ]
+    },
+    {
+      "anchor_id": "anchor-003",
+      "image_point": [
+        789.375,
+        375.20089285714283
+      ]
+    },
+    {
+      "anchor_id": "anchor-004",
+      "image_point": [
+        1150.6205357142858,
+        396.4017857142857
+      ]
+    },
+    {
+      "anchor_id": "anchor-002",
+      "image_point": [
+        582.1741071428571,
+        503.49107142857144
+      ]
+    },
+    {
+      "anchor_id": "anchor-005",
+      "image_point": [
+        1477.9285714285713,
+        627.5758928571429
+      ]
+    },
+    {
+      "anchor_id": "anchor-006",
+      "image_point": [
+        821.4642857142857,
+        658.8080357142857
+      ]
+    },
+    {
+      "anchor_id": "anchor-007",
+      "image_point": [
+        422.95982142857144,
+        1070.7857142857142
+      ]
+    },
+    {
+      "anchor_id": "anchor-008",
+      "image_point": [
+        1475.638392857143,
+        492.3482142857143
+      ]
+    },
+    {
+      "anchor_id": "anchor-009",
+      "image_point": [
+        1646.3705357142858,
+        519.4821428571429
+      ]
+    },
+    {
+      "anchor_id": "anchor-010",
+      "image_point": [
+        543.4955357142857,
+        279.75
+      ]
+    }
+  ]
 }
