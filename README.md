@@ -6,6 +6,7 @@ Repozytorium zawiera aplikację do **booth analytics** na wspólnej mapie 2D hal
 Najważniejsze możliwości
 ------------------------
 - odbiór kamer UDP lub lokalnych plików MP4,
+- tryb rozproszony server/worker dla kamer uruchamianych na innych hostach,
 - detekcja osób YOLO,
 - lokalny tracking przez Ultralytics Track Mode z BoT-SORT,
 - kalibracja kamera -> mapa hali przez homografię,
@@ -36,11 +37,26 @@ Uruchomienie
    python main.py
    ```
 
+Tryb rozproszony
+----------------
+- Serwer z UI i analytics uruchamiasz standardowo:
+  ```bash
+  python main.py
+  ```
+- Worker dla jednej kamery uruchamiasz osobno:
+  ```bash
+  python -m app.main --mode worker --camera-id camera-1 --server-host 192.168.1.10 --server-port 6100
+  ```
+- Kamera przypisana do workera musi mieć w konfiguracji `runtime_mode = remote`.
+- W tej iteracji konfiguracja projektu jest kopiowana ręcznie na host workerowy.
+
 Konfiguracja
 ------------
 - `config/project.json`: projekt, playback sync, overlap dedup, analytics.
 - `config/cameras/*.json`: źródła kamer, tracking, kalibracja, coverage.
 - `config/venue.json`: mapa hali i strefy / stoiska.
+- `project.distributed_runtime`: ustawienia serwera TCP i heartbeatów workerów.
+- `camera.runtime_mode` / `camera.remote_worker_id`: przypisanie kamery do trybu lokalnego lub zdalnego workera.
 
 Jeżeli nie wczytasz pliku mapy, aplikacja użyje pustego tła z siatką i nadal pozwoli kalibrować oraz rysować strefy w przestrzeni 2D.
 

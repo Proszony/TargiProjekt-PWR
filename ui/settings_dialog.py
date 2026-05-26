@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFormLayout,
+    QFrame,
+    QHBoxLayout,
     QLabel,
-    QTabWidget,
     QVBoxLayout,
-    QWidget,
 )
 
-from core.models import PlaybackSyncConfig, ProjectConfig
+from core.models import ProjectConfig
+from ui.style_system import apply_chrome
 
 
 class SettingsDialog(QDialog):
@@ -28,7 +27,8 @@ class SettingsDialog(QDialog):
         self._is_running = is_running
         self._build_ui()
         self._load_values()
-        self._apply_running_state()
+        apply_chrome(self)
+        self._apply_local_styles()
 
     @property
     def project_config(self) -> ProjectConfig:
@@ -36,107 +36,143 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        self.analytics_tab = QWidget()
-        self.playback_tab = QWidget()
+        root.setContentsMargins(20, 20, 20, 18)
+        root.setSpacing(16)
 
-        analytics_form = QFormLayout(self.analytics_tab)
-        self.analytics_info = QLabel(
-            "This product is optimized for booth analytics: dwell time, occupancy, visits, and overlap-only deduplication."
+        hero = QFrame()
+        hero.setObjectName("SettingsHero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(0, 0, 0, 0)
+        hero_layout.setSpacing(6)
+
+        eyebrow = QLabel("Booth timing")
+        eyebrow.setObjectName("HeroEyebrow")
+        title = QLabel("Time tracking controls")
+        title.setObjectName("SectionTitle")
+        subtitle = QLabel(
+            "Small timing changes decide when a person becomes counted inside a booth and when they are released."
         )
-        self.analytics_info.setWordWrap(True)
+        subtitle.setObjectName("SectionSubtitle")
+        subtitle.setWordWrap(True)
+
+        hero_layout.addWidget(eyebrow)
+        hero_layout.addWidget(title)
+        hero_layout.addWidget(subtitle)
+
         self.zone_entry_spin = QDoubleSpinBox()
-        self.zone_entry_spin.setRange(0.1, 10.0)
-        self.zone_entry_spin.setSingleStep(0.05)
+        self._configure_seconds_spin(self.zone_entry_spin)
+
         self.zone_exit_grace_spin = QDoubleSpinBox()
-        self.zone_exit_grace_spin.setRange(0.1, 10.0)
-        self.zone_exit_grace_spin.setSingleStep(0.05)
-        self.dedup_enabled_checkbox = QCheckBox("Enable overlap deduplication")
-        self.dedup_confirmation_spin = QDoubleSpinBox()
-        self.dedup_confirmation_spin.setRange(1.0, 10.0)
-        self.dedup_confirmation_spin.setSingleStep(1.0)
-        self.dedup_similarity_spin = QDoubleSpinBox()
-        self.dedup_similarity_spin.setRange(0.0, 1.0)
-        self.dedup_similarity_spin.setSingleStep(0.01)
-        self.dedup_margin_spin = QDoubleSpinBox()
-        self.dedup_margin_spin.setRange(0.0, 1.0)
-        self.dedup_margin_spin.setSingleStep(0.01)
-        self.live_rate_spin = QDoubleSpinBox()
-        self.live_rate_spin.setRange(1.0, 10.0)
-        self.live_rate_spin.setSingleStep(0.5)
+        self._configure_seconds_spin(self.zone_exit_grace_spin)
 
-        analytics_form.addRow(self.analytics_info)
-        analytics_form.addRow("Zone entry confirmation [s]", self.zone_entry_spin)
-        analytics_form.addRow("Zone exit grace [s]", self.zone_exit_grace_spin)
-        analytics_form.addRow("", self.dedup_enabled_checkbox)
-        analytics_form.addRow("Dedup confirmation frames", self.dedup_confirmation_spin)
-        analytics_form.addRow("Dedup similarity threshold", self.dedup_similarity_spin)
-        analytics_form.addRow("Dedup score margin", self.dedup_margin_spin)
-        analytics_form.addRow("Live UI refresh rate [Hz]", self.live_rate_spin)
-
-        playback_form = QFormLayout(self.playback_tab)
-        self.file_sync_enabled_checkbox = QCheckBox("Enable strict sync for file sources")
-        self.target_fps_spin = QDoubleSpinBox()
-        self.target_fps_spin.setRange(1.0, 120.0)
-        self.target_fps_spin.setSingleStep(1.0)
-        self.sync_tolerance_spin = QDoubleSpinBox()
-        self.sync_tolerance_spin.setRange(0.001, 1.0)
-        self.sync_tolerance_spin.setSingleStep(0.005)
-        self.late_drop_spin = QDoubleSpinBox()
-        self.late_drop_spin.setRange(0.001, 2.0)
-        self.late_drop_spin.setSingleStep(0.01)
-        self.stale_packet_spin = QDoubleSpinBox()
-        self.stale_packet_spin.setRange(0.001, 2.0)
-        self.stale_packet_spin.setSingleStep(0.01)
-        self.camera_missing_spin = QDoubleSpinBox()
-        self.camera_missing_spin.setRange(0.001, 5.0)
-        self.camera_missing_spin.setSingleStep(0.05)
-
-        playback_form.addRow("", self.file_sync_enabled_checkbox)
-        playback_form.addRow("Target FPS", self.target_fps_spin)
-        playback_form.addRow("Sync tolerance [s]", self.sync_tolerance_spin)
-        playback_form.addRow("Late frame drop [s]", self.late_drop_spin)
-        playback_form.addRow("Stale packet [s]", self.stale_packet_spin)
-        playback_form.addRow("Missing camera [s]", self.camera_missing_spin)
-
-        self.tabs.addTab(self.analytics_tab, "Analytics")
-        self.tabs.addTab(self.playback_tab, "Playback")
-
-        helper = QLabel(
-            "Use Manage cameras for source, detector, tracker, and overlap topology. Calibration and booths are edited outside this dialog."
+        controls = QVBoxLayout()
+        controls.setSpacing(10)
+        controls.addWidget(
+            self._build_setting_row(
+                "Entry confirmation",
+                "Person must remain inside a booth this long before a visit starts.",
+                self.zone_entry_spin,
+            )
         )
-        helper.setWordWrap(True)
+        controls.addWidget(
+            self._build_setting_row(
+                "Exit grace",
+                "Brief tracking gaps shorter than this keep the booth visit alive.",
+                self.zone_exit_grace_spin,
+            )
+        )
+
+        runtime_note = QLabel(
+            "Changes apply to booth time metrics only. Detection, sync, counting, and distributed transport stay unchanged."
+        )
+        runtime_note.setObjectName("SettingsNote")
+        runtime_note.setWordWrap(True)
+        if self._is_running:
+            runtime_note.setText(
+                "Runtime is active. Applied values affect new booth timing decisions without restarting streams."
+            )
 
         self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Apply)
+        self.button_box.button(QDialogButtonBox.Ok).setText("Save and close")
+        self.button_box.button(QDialogButtonBox.Apply).setText("Apply")
+        self.button_box.button(QDialogButtonBox.Cancel).setText("Cancel")
+        self.button_box.button(QDialogButtonBox.Ok).setProperty("kind", "primary")
         self.button_box.accepted.connect(self._accept_and_apply)
         self.button_box.button(QDialogButtonBox.Apply).clicked.connect(self._apply_clicked)
         self.button_box.rejected.connect(self.reject)
 
-        root.addWidget(self.tabs)
-        root.addWidget(helper)
+        root.addWidget(hero)
+        root.addLayout(controls)
+        root.addWidget(runtime_note)
+        root.addStretch(1)
         root.addWidget(self.button_box)
 
-    def _load_values(self) -> None:
-        analytics = self._project.analytics
-        playback_sync: PlaybackSyncConfig = self._project.playback_sync
-        self.zone_entry_spin.setValue(analytics.zone_entry_min_duration_s)
-        self.zone_exit_grace_spin.setValue(analytics.zone_exit_grace_s)
-        self.dedup_enabled_checkbox.setChecked(analytics.dedup_overlap_enabled)
-        self.dedup_confirmation_spin.setValue(float(analytics.dedup_confirmation_frames))
-        self.dedup_similarity_spin.setValue(analytics.dedup_similarity_threshold)
-        self.dedup_margin_spin.setValue(analytics.dedup_margin_min)
-        self.live_rate_spin.setValue(analytics.live_snapshot_rate_hz)
-        self.file_sync_enabled_checkbox.setChecked(playback_sync.enabled_for_file_sources)
-        self.target_fps_spin.setValue(playback_sync.target_fps)
-        self.sync_tolerance_spin.setValue(playback_sync.sync_tolerance_s)
-        self.late_drop_spin.setValue(playback_sync.late_frame_drop_threshold_s)
-        self.stale_packet_spin.setValue(playback_sync.stale_packet_threshold_s)
-        self.camera_missing_spin.setValue(playback_sync.camera_missing_timeout_s)
+    @staticmethod
+    def _configure_seconds_spin(spin: QDoubleSpinBox) -> None:
+        spin.setRange(0.1, 10.0)
+        spin.setSingleStep(0.05)
+        spin.setDecimals(2)
+        spin.setSuffix(" s")
+        spin.setFixedSize(108, 34)
+        spin.setAlignment(Qt.AlignRight)
 
-    def _apply_running_state(self) -> None:
-        if not self._is_running:
-            return
-        self.file_sync_enabled_checkbox.setEnabled(False)
+    @staticmethod
+    def _build_setting_row(title: str, description: str, control: QDoubleSpinBox) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("SettingRow")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(14)
+
+        text_stack = QVBoxLayout()
+        text_stack.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setObjectName("SettingTitle")
+        description_label = QLabel(description)
+        description_label.setObjectName("FieldHint")
+        description_label.setWordWrap(True)
+        text_stack.addWidget(title_label)
+        text_stack.addWidget(description_label)
+
+        layout.addLayout(text_stack, 1)
+        layout.addWidget(control, 0, Qt.AlignRight | Qt.AlignVCenter)
+        return frame
+
+    def _apply_local_styles(self) -> None:
+        self.setStyleSheet(
+            self.styleSheet()
+            + """
+            QFrame#SettingsHero {
+                background: transparent;
+                border: 0;
+            }
+            QFrame#SettingRow {
+                background: #0d1721;
+                border: 1px solid #1f3141;
+                border-radius: 12px;
+            }
+            QLabel#SettingTitle {
+                color: #f2f7fb;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QLabel#SettingsNote {
+                background: #0a131b;
+                border: 1px solid #1f3141;
+                border-radius: 10px;
+                color: #9fb1c0;
+                padding: 10px 12px;
+            }
+            QDoubleSpinBox {
+                font-size: 13px;
+                font-weight: 600;
+            }
+            """
+        )
+
+    def _load_values(self) -> None:
+        self.zone_entry_spin.setValue(self._project.analytics.zone_entry_min_duration_s)
+        self.zone_exit_grace_spin.setValue(self._project.analytics.zone_exit_grace_s)
 
     @Slot()
     def _apply_clicked(self) -> None:
@@ -150,21 +186,4 @@ class SettingsDialog(QDialog):
     def _emit(self) -> None:
         self._project.analytics.zone_entry_min_duration_s = self.zone_entry_spin.value()
         self._project.analytics.zone_exit_grace_s = self.zone_exit_grace_spin.value()
-        self._project.analytics.dedup_overlap_enabled = self.dedup_enabled_checkbox.isChecked()
-        self._project.analytics.dedup_confirmation_frames = int(round(self.dedup_confirmation_spin.value()))
-        self._project.analytics.dedup_similarity_threshold = self.dedup_similarity_spin.value()
-        self._project.analytics.dedup_margin_min = self.dedup_margin_spin.value()
-        self._project.analytics.live_snapshot_rate_hz = self.live_rate_spin.value()
-
-        self._project.overlap_dedup.enabled = self.dedup_enabled_checkbox.isChecked()
-        self._project.overlap_dedup.confirmation_frames = int(round(self.dedup_confirmation_spin.value()))
-        self._project.overlap_dedup.similarity_threshold = self.dedup_similarity_spin.value()
-        self._project.overlap_dedup.margin_min = self.dedup_margin_spin.value()
-
-        self._project.playback_sync.enabled_for_file_sources = self.file_sync_enabled_checkbox.isChecked()
-        self._project.playback_sync.target_fps = self.target_fps_spin.value()
-        self._project.playback_sync.sync_tolerance_s = self.sync_tolerance_spin.value()
-        self._project.playback_sync.late_frame_drop_threshold_s = self.late_drop_spin.value()
-        self._project.playback_sync.stale_packet_threshold_s = self.stale_packet_spin.value()
-        self._project.playback_sync.camera_missing_timeout_s = self.camera_missing_spin.value()
         self.settings_applied.emit(self.project_config)

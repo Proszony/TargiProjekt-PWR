@@ -21,12 +21,9 @@ def build_camera_overlap_graph(
                 camera_b.camera_id in camera_a.overlap_camera_ids
                 or camera_a.camera_id in camera_b.overlap_camera_ids
             )
-            auto_allowed = camera_a.allow_auto_overlap and camera_b.allow_auto_overlap
             is_adjacent = manual_override or (
                 camera_a.calibration_valid
                 and camera_b.calibration_valid
-                and
-                auto_allowed
                 and (
                     overlap_area >= dedup_config.overlap_area_min_m2
                     or min_distance <= dedup_config.boundary_gap_m

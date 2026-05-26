@@ -3,7 +3,17 @@ from __future__ import annotations
 from typing import Iterable, Literal
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QBrush, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QBrush,
+    QImage,
+    QKeyEvent,
+    QLinearGradient,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import QWidget
 
 from core.models import (
@@ -48,6 +58,10 @@ class MapView(QWidget):
         self._calibration_points: list[Point] = []
         self._selected_calibration_index: int | None = None
         self._dragging_kind: Literal["calibration", "draft", "zone"] | None = None
+        self._focused_camera_id: str | None = None
+        self._show_coverages = True
+        self._show_overlaps = True
+        self._show_tracks = True
         self._handle_radius = 8.0
         self.setMinimumSize(360, 240)
         self.setMouseTracking(True)
@@ -78,6 +92,22 @@ class MapView(QWidget):
 
     def set_camera_overlaps(self, overlaps: list[CameraOverlapOverlay]) -> None:
         self._camera_overlaps = overlaps
+        self.update()
+
+    def set_focused_camera(self, camera_id: str | None) -> None:
+        self._focused_camera_id = camera_id
+        self.update()
+
+    def set_show_coverages(self, visible: bool) -> None:
+        self._show_coverages = visible
+        self.update()
+
+    def set_show_overlaps(self, visible: bool) -> None:
+        self._show_overlaps = visible
+        self.update()
+
+    def set_show_tracks(self, visible: bool) -> None:
+        self._show_tracks = visible
         self.update()
 
     def set_mode(self, mode: Literal["view", "pick_points", "draw_zone", "edit_zone"]) -> None:
@@ -134,7 +164,10 @@ class MapView(QWidget):
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#0f1720"))
+        shell_gradient = QLinearGradient(0.0, 0.0, float(self.width()), float(self.height()))
+        shell_gradient.setColorAt(0.0, QColor("#08131d"))
+        shell_gradient.setColorAt(1.0, QColor("#10202d"))
+        painter.fillRect(self.rect(), shell_gradient)
         self._content_rect = self._calculate_content_rect()
         self._paint_background(painter)
         self._paint_grid(painter)
@@ -297,7 +330,15 @@ class MapView(QWidget):
         if not self._background.isNull():
             painter.drawImage(self._content_rect, self._background)
         else:
-            painter.fillRect(self._content_rect, QColor("#1b2635"))
+            background_gradient = QLinearGradient(
+                self._content_rect.left(),
+                self._content_rect.top(),
+                self._content_rect.right(),
+                self._content_rect.bottom(),
+            )
+            background_gradient.setColorAt(0.0, QColor("#15222f"))
+            background_gradient.setColorAt(1.0, QColor("#0b1620"))
+            painter.fillRect(self._content_rect, background_gradient)
 
     def _paint_grid(self, painter: QPainter) -> None:
         pen = QPen(QColor("#243447"))
@@ -335,16 +376,26 @@ class MapView(QWidget):
                     )
 
     def _paint_camera_coverages(self, painter: QPainter) -> None:
-        for coverage in self._camera_coverages:
+        if not self._show_coverages:
+            return
+        ordered = sorted(
+            self._camera_coverages,
+            key=lambda item: item.camera_id == self._focused_camera_id,
+        )
+        for coverage in ordered:
+            if self._focused_camera_id is not None and coverage.camera_id != self._focused_camera_id:
+                continue
             raw_polygon = coverage.raw_polygon_world
             clipped_polygon = coverage.polygon_world
+            is_focus = coverage.camera_id == self._focused_camera_id
+            is_dimmed = self._focused_camera_id is not None and not is_focus
             if len(raw_polygon) >= 3:
                 path = self._zone_path(raw_polygon)
                 pen = QPen(QColor(coverage.color))
-                pen.setWidth(1)
+                pen.setWidth(2 if is_focus else 1)
                 pen.setStyle(Qt.DashLine)
                 raw_color = QColor(coverage.color)
-                raw_color.setAlpha(70)
+                raw_color.setAlpha(92 if is_focus else (28 if is_dimmed else 58))
                 pen.setColor(raw_color)
                 painter.setPen(pen)
                 painter.setBrush(Qt.NoBrush)
@@ -353,28 +404,37 @@ class MapView(QWidget):
                 continue
             path = self._zone_path(clipped_polygon)
             fill = QColor(coverage.color)
-            fill.setAlpha(36)
+            fill.setAlpha(74 if is_focus else (16 if is_dimmed else 34))
             painter.fillPath(path, fill)
             pen = QPen(QColor(coverage.color))
-            pen.setWidth(2)
+            pen.setWidth(3 if is_focus else 2)
             pen.setStyle(Qt.SolidLine)
             painter.setPen(pen)
             painter.drawPath(path)
-            painter.setPen(QColor("#cbd5e1"))
-            painter.drawText(self._polygon_label_point(clipped_polygon), coverage.camera_name)
+            self._draw_text_chip(
+                painter,
+                self._polygon_label_point(clipped_polygon),
+                coverage.camera_name,
+                background=coverage.color if is_focus else "#142433",
+                foreground="#f8fbfd",
+            )
 
     def _paint_camera_overlaps(self, painter: QPainter) -> None:
+        if not self._show_overlaps:
+            return
         for overlay in self._camera_overlaps:
             if len(overlay.polygon_world) < 3:
                 continue
+            is_focus = self._focused_camera_id in {overlay.camera_a_id, overlay.camera_b_id}
+            is_dimmed = self._focused_camera_id is not None and not is_focus
             path = self._zone_path(overlay.polygon_world)
             fill = QColor("#f59e0b")
-            fill.setAlpha(82)
+            fill.setAlpha(104 if is_focus else (24 if is_dimmed else 72))
             painter.fillPath(path, fill)
             brush = QBrush(QColor("#fbbf24"), Qt.BDiagPattern)
             painter.fillPath(path, brush)
             pen = QPen(QColor("#f97316"))
-            pen.setWidth(2)
+            pen.setWidth(3 if is_focus else 2)
             pen.setStyle(Qt.DashLine)
             painter.setPen(pen)
             painter.drawPath(path)
@@ -387,11 +447,17 @@ class MapView(QWidget):
             )
 
     def _paint_tracks(self, painter: QPainter) -> None:
+        if not self._show_tracks:
+            return
         for presence in self.analytics_snapshot.active_map_presences:
+            if (
+                self._focused_camera_id is not None
+                and self._focused_camera_id not in presence.source_camera_ids
+            ):
+                continue
             point = self.world_to_widget(presence.world_point)
             fill_color = QColor("#ffe66d")
-            border_color = QColor("#f59e0b") if presence.merged_for_counting else QColor("#0f1720")
-            painter.setPen(QPen(border_color, 2 if presence.merged_for_counting else 1))
+            painter.setPen(QPen(QColor("#0f1720"), 1))
             painter.setBrush(fill_color)
             painter.drawEllipse(point, 6, 6)
 
