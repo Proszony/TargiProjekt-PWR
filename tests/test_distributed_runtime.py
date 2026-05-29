@@ -191,6 +191,59 @@ class DistributedRuntimeTests(unittest.TestCase):
 
             self.assertIn(("camera-remote", 17.5), fps_updates)
 
+    def test_local_operator_preview_is_throttled_without_skipping_analytics(self) -> None:
+        if QImage is None or QColor is None:
+            self.skipTest("Qt image helpers unavailable.")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-local",
+                        runtime_mode="local",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            rendered_frames: list[QImage] = []
+            snapshots: list[MultiCameraRuntimeSnapshot] = []
+            manager.camera_frame_ready.connect(
+                lambda camera_id, image: rendered_frames.append(image)
+                if camera_id == "camera-local" and isinstance(image, QImage)
+                else None
+            )
+            manager.runtime_snapshot_ready.connect(lambda snapshot: snapshots.append(snapshot))
+            frame = QImage(320, 180, QImage.Format_RGB32)
+            frame.fill(QColor("#020617"))
+
+            first_packet = _packet(
+                "camera-local",
+                "camera-local:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=1,
+            )
+            second_packet = _packet(
+                "camera-local",
+                "camera-local:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=2,
+            )
+            first_packet.local_tracks[1].current_bbox_xyxy = None
+            first_packet.local_tracks[1].last_bbox_xyxy_for_matching = None
+            second_packet.local_tracks[1].current_bbox_xyxy = None
+            second_packet.local_tracks[1].last_bbox_xyxy_for_matching = None
+            manager._handle_camera_frame("camera-local", 1, frame)
+            manager._handle_camera_packet(first_packet)
+            manager._handle_camera_frame("camera-local", 2, frame)
+            manager._handle_camera_packet(second_packet)
+
+            self.assertEqual(len(rendered_frames), 1)
+            self.assertEqual(len(snapshots), 2)
+
     def test_remote_preview_refreshes_even_when_packet_frame_index_differs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

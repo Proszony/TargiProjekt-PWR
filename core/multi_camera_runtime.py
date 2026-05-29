@@ -56,6 +56,7 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images: dict[str, dict[int, object]] = {}
         self._latest_remote_preview_images: dict[str, QImage] = {}
         self._latest_remote_labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
+        self._last_operator_frame_emitted_at_by_camera: dict[str, float] = {}
         self._analytics = AnalyticsEngine(
             venue_map=project_config.venue_map,
             zone_entry_min_duration_s=project_config.analytics.zone_entry_min_duration_s,
@@ -97,6 +98,7 @@ class MultiCameraPipelineManager(QObject):
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._last_operator_frame_emitted_at_by_camera.pop(camera_id, None)
         active_local_camera_ids = {
             camera.camera_id
             for camera in self.project_config.cameras
@@ -116,6 +118,7 @@ class MultiCameraPipelineManager(QObject):
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._last_operator_frame_emitted_at_by_camera.pop(camera_id, None)
         for camera_id, worker in self._workers.items():
             camera = camera_lookup.get(camera_id)
             if camera is None:
@@ -169,6 +172,7 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images.clear()
         self._latest_remote_preview_images.clear()
         self._latest_remote_labels_by_camera.clear()
+        self._last_operator_frame_emitted_at_by_camera.clear()
         self._session_started_at_unix_s = time.time()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
@@ -480,9 +484,20 @@ class MultiCameraPipelineManager(QObject):
             image = self._frame_images.get(camera_id, {}).get(packet.frame_index)
             if not isinstance(image, QImage):
                 continue
+            if not self._operator_frame_due(camera_id):
+                self._drop_stale_frame_images(camera_id, keep_from_index=packet.frame_index - 1)
+                continue
             labeled = self._draw_operator_labels(image, labels_by_camera.get(camera_id, []))
             self.camera_frame_ready.emit(camera_id, labeled)
+            self._last_operator_frame_emitted_at_by_camera[camera_id] = time.perf_counter()
             self._drop_stale_frame_images(camera_id, keep_from_index=packet.frame_index - 1)
+
+    def _operator_frame_due(self, camera_id: str) -> bool:
+        min_interval_s = 1.0 / max(rd.DEFAULT_OPERATOR_PREVIEW_FPS, 1.0)
+        last_emitted_at = self._last_operator_frame_emitted_at_by_camera.get(camera_id)
+        if last_emitted_at is None:
+            return True
+        return time.perf_counter() - last_emitted_at >= min_interval_s
 
     def _build_local_map_presences(
         self,
@@ -583,6 +598,7 @@ class MultiCameraPipelineManager(QObject):
         self._frame_images.pop(camera_id, None)
         self._latest_remote_preview_images.pop(camera_id, None)
         self._latest_remote_labels_by_camera.pop(camera_id, None)
+        self._last_operator_frame_emitted_at_by_camera.pop(camera_id, None)
         if self._running and self._workers:
             return
         self._finish_stop_if_possible()
