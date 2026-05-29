@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from core.models import (
+    AnalyticsConfig,
     CameraConfig,
     CameraTrackingPacket,
     DistributedRuntimeConfig,
@@ -20,6 +24,7 @@ from core.statistics_service import StatisticsService
 try:
     from PySide6.QtCore import QByteArray, QBuffer, QIODevice
     from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import QApplication
 
     from core.multi_camera_runtime import MultiCameraPipelineManager
 except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
@@ -29,6 +34,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
     QIODevice = None
     QColor = None
     QImage = None
+    QApplication = None
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
@@ -94,6 +100,12 @@ def _jpeg_preview(camera_id: str, *, frame_index: int) -> dict[str, object]:
 
 @unittest.skipIf(MultiCameraPipelineManager is None, f"UI dependencies unavailable: {_IMPORT_ERROR}")
 class DistributedRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        if QApplication is not None:
+            cls._app = QApplication.instance() or QApplication([])
+
     def test_single_file_camera_uses_realtime_session_mode(self) -> None:
         mode = MultiCameraPipelineManager._determine_session_sync_mode(
             [CameraConfig(camera_id="camera-1", source_type="file")]
@@ -128,6 +140,7 @@ class DistributedRuntimeTests(unittest.TestCase):
                         )
                     ]
                 ),
+                analytics=AnalyticsConfig(zone_entry_min_duration_s=0.0),
                 cameras=[
                     CameraConfig(
                         camera_id="camera-local",

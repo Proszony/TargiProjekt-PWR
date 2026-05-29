@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from core import runtime_defaults as rd
 from core.calibration import recompute_camera_coverage
 from core.coverage_mapping import propose_coverage_polygon_image
-from core.detection import YoloPersonDetector, annotate_frame, qimage_from_bgr
+from core.detection import annotate_frame, qimage_from_bgr
 from core.media_time import resolve_media_time, resolve_stream_fps
 from core.model_catalog import resolve_detector_model_spec
 from core.models import CameraConfig, CameraTrackingPacket, LocalTrack, PlaybackSyncConfig, VenueMapConfig
@@ -35,6 +35,10 @@ class _RuntimeConfigSnapshot:
     camera_config: CameraConfig
     venue_map: VenueMapConfig
     tracker_config_path: str
+
+
+def _round_point(point: tuple[float, float]) -> tuple[float, float]:
+    return (round(float(point[0]), 6), round(float(point[1]), 6))
 
 
 class CameraPipelineWorker(QObject):
@@ -88,12 +92,6 @@ class CameraPipelineWorker(QObject):
             self.project_root,
             camera_config.detector_model_path or model_path,
         )
-        self._detector = YoloPersonDetector(
-            resolved_model_path,
-            confidence=confidence,
-            inference_size=inference_size,
-            use_augmentation=rd.DEFAULT_DETECTOR_AUGMENTATION,
-        )
         self._tracker = SimpleWorldTracker(
             track_timeout_s=rd.DEFAULT_TRACK_TIMEOUT_S,
             max_world_distance_m=rd.DEFAULT_TRACKER_MAX_WORLD_DISTANCE_M,
@@ -119,6 +117,7 @@ class CameraPipelineWorker(QObject):
         self._on_fps_update = on_fps_update
         self._detection_enabled = True
         self._runtime_tracker_signature: tuple[object, ...] | None = None
+        self._coverage_recompute_signature: tuple[object, ...] | None = None
         self._runtime_config = self._build_runtime_config_snapshot(camera_config, venue_map)
 
     @Slot()
@@ -284,6 +283,7 @@ class CameraPipelineWorker(QObject):
         with self._config_lock:
             self.camera_config = camera_config
             self.venue_map = venue_map
+            self._coverage_recompute_signature = None
             self._runtime_config = self._build_runtime_config_snapshot(camera_config, venue_map)
 
     def set_playback_sync(
@@ -302,13 +302,11 @@ class CameraPipelineWorker(QObject):
 
     def set_confidence(self, confidence: float) -> None:
         with self._config_lock:
-            self._detector.confidence = confidence
             self._tracker_adapter.confidence = confidence
             self._runtime_config = self._build_runtime_config_snapshot(self.camera_config, self.venue_map)
 
     def set_inference_size(self, inference_size: int) -> None:
         with self._config_lock:
-            self._detector.inference_size = inference_size
             self._tracker_adapter.inference_size = inference_size
 
     def _refresh_camera_coverage(
@@ -317,6 +315,7 @@ class CameraPipelineWorker(QObject):
         frame_bgr,
     ) -> None:
         if camera_config.homography_image_to_world is None:
+            self._coverage_recompute_signature = None
             return
         if not camera_config.coverage_polygon_image:
             proposal = propose_coverage_polygon_image(
@@ -328,6 +327,9 @@ class CameraPipelineWorker(QObject):
                 camera_config.coverage_auto_generated = True
                 camera_config.coverage_confidence = proposal.confidence
                 camera_config.coverage_warning_text = " | ".join(proposal.warnings)
+        coverage_signature = self._camera_coverage_signature(camera_config)
+        if coverage_signature == self._coverage_recompute_signature:
+            return
         coverage_result = recompute_camera_coverage(camera_config)
         camera_config.coverage_polygon_world_raw = coverage_result.raw_polygon_world or None
         camera_config.coverage_polygon_world = coverage_result.sanitized_polygon_world or None
@@ -343,16 +345,31 @@ class CameraPipelineWorker(QObject):
         camera_config.coverage_warning_text = " | ".join(coverage_result.warnings)
         camera_config.calibration_warning_text = " | ".join(dict.fromkeys(combined_warnings))
         camera_config.calibration_valid = bool(camera_config.homography_image_to_world) and coverage_result.is_valid
+        self._coverage_recompute_signature = coverage_signature
+
+    @staticmethod
+    def _camera_coverage_signature(camera_config: CameraConfig) -> tuple[object, ...]:
+        return (
+            tuple(
+                tuple(float(value) for value in row)
+                for row in (camera_config.homography_image_to_world or [])
+            ),
+            int(camera_config.frame_width),
+            int(camera_config.frame_height),
+            tuple(
+                (str(anchor.anchor_id), _round_point(anchor.image_point))
+                for anchor in camera_config.anchor_observations
+            ),
+            tuple(_round_point(point) for point in (camera_config.coverage_polygon_image or [])),
+        )
 
     def set_detector_model_path(self, model_path: str) -> None:
         with self._config_lock:
             resolved = resolve_detector_model_spec(self.project_root, model_path or rd.DEFAULT_DETECTOR_MODEL_PATH)
-            self._detector.set_model_path(resolved)
             self._tracker_adapter.set_model_path(resolved)
 
     def set_detector_augmentation(self, enabled: bool) -> None:
         with self._config_lock:
-            self._detector.use_augmentation = bool(enabled)
             self._tracker_adapter.use_augmentation = bool(enabled)
 
     def _build_runtime_config_snapshot(
@@ -360,18 +377,15 @@ class CameraPipelineWorker(QObject):
         camera_config: CameraConfig,
         venue_map: VenueMapConfig,
     ) -> _RuntimeConfigSnapshot:
+        self._coverage_recompute_signature = None
         camera_snapshot = CameraConfig.from_dict(camera_config.to_dict())
         venue_snapshot = VenueMapConfig.from_dict(venue_map.to_dict())
         resolved_model_spec = resolve_detector_model_spec(
             self.project_root,
             camera_snapshot.detector_model_path or rd.DEFAULT_DETECTOR_MODEL_PATH,
         )
-        self._detector.set_model_path(resolved_model_spec)
-        self._detector.use_augmentation = camera_snapshot.detector_use_augmentation
         self._tracker_adapter.set_model_path(resolved_model_spec)
         self._tracker_adapter.use_augmentation = camera_snapshot.detector_use_augmentation
-        self._tracker_adapter.confidence = self._detector.confidence
-        self._tracker_adapter.inference_size = self._detector.inference_size
         self._apply_tracker_settings(camera_snapshot)
         tracker_config_path = self._materialize_tracker_config(camera_snapshot)
         return _RuntimeConfigSnapshot(

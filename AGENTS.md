@@ -39,7 +39,7 @@ Booth analytics on a shared 2D world map. The app synchronizes camera feeds, tra
 
 ## Testing
 - `.venv/bin/python -m unittest discover -s tests`
-- `python -m compileall core ui tests main.py raspberry-feed-yolo.py`
+- `python -m compileall core ui tests main.py app/main.py`
 
 ## Debugging Checklist
 - If booth dwell looks wrong:
