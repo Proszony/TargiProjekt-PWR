@@ -80,6 +80,42 @@ class StatisticsRepositoryTests(unittest.TestCase):
         self.assertEqual(visits[0]["visit_id"], "V0000001")
         self.assertEqual(visits[0]["dedup_mode"], "local_only")
 
+    def test_active_write_session_reuses_one_connection_for_writes(self) -> None:
+        connect_calls = 0
+        original_connect = self.repository._connect
+
+        def counted_connect() -> sqlite3.Connection:
+            nonlocal connect_calls
+            connect_calls += 1
+            return original_connect()
+
+        self.repository._connect = counted_connect  # type: ignore[method-assign]
+        self.repository.begin_active_write_session()
+        try:
+            session_id = self.repository.start_session(10.0, "file", "demo.mp4", "camera-1")
+            snapshot = AnalyticsSnapshot(
+                timestamp=11.0,
+                zone_metrics={
+                    "booth-a": ZoneMetrics(
+                        zone_id="booth-a",
+                        zone_name="Booth A",
+                        zone_kind="booth",
+                        current_occupancy=1,
+                        unique_visits=1,
+                        total_dwell_s=2.0,
+                        avg_dwell_s=2.0,
+                        median_dwell_s=2.0,
+                        peak_occupancy=1,
+                    )
+                },
+            )
+            self.repository.record_snapshot(session_id, snapshot, self.venue)
+            self.repository.finish_session(session_id, 12.0)
+        finally:
+            self.repository.end_active_write_session()
+
+        self.assertEqual(connect_calls, 1)
+
     def test_legacy_zone_snapshot_schema_is_repaired(self) -> None:
         with sqlite3.connect(self.database_path) as connection:
             connection.executescript(

@@ -18,27 +18,38 @@ class StatisticsService:
         source_label: str,
         camera_id: str,
     ) -> int:
-        self.current_session_id = self.repository.start_session(
-            started_at=started_at,
-            source_type=source_type,
-            source_label=source_label,
-            camera_id=camera_id,
-        )
+        self.repository.begin_active_write_session()
+        try:
+            self.current_session_id = self.repository.start_session(
+                started_at=started_at,
+                source_type=source_type,
+                source_label=source_label,
+                camera_id=camera_id,
+            )
+        except Exception:
+            self.repository.end_active_write_session()
+            raise
         return self.current_session_id
 
     def finish_session(self, ended_at: float) -> None:
         if self.current_session_id is None:
             return
-        self.repository.finish_session(self.current_session_id, ended_at)
-        self.current_session_id = None
+        try:
+            self.repository.finish_session(self.current_session_id, ended_at)
+        finally:
+            self.current_session_id = None
+            self.repository.end_active_write_session()
 
     def finish_session_with_heatmap(self, ended_at: float, heatmap_snapshot: HeatmapSnapshot | None) -> None:
         if self.current_session_id is None:
             return
-        if heatmap_snapshot is not None:
-            self.repository.record_session_heatmap(self.current_session_id, heatmap_snapshot)
-        self.repository.finish_session(self.current_session_id, ended_at)
-        self.current_session_id = None
+        try:
+            if heatmap_snapshot is not None:
+                self.repository.record_session_heatmap(self.current_session_id, heatmap_snapshot)
+            self.repository.finish_session(self.current_session_id, ended_at)
+        finally:
+            self.current_session_id = None
+            self.repository.end_active_write_session()
 
     def record_snapshot(
         self,

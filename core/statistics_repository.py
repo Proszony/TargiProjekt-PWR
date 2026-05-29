@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -58,11 +59,13 @@ class StatisticsRepository:
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
+        self._active_write_connection: sqlite3.Connection | None = None
+        self._active_write_lock = threading.RLock()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection = sqlite3.connect(self.database_path, timeout=5.0, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -74,6 +77,43 @@ class StatisticsRepository:
             connection.commit()
         finally:
             connection.close()
+
+    @contextmanager
+    def _managed_write_connection(self):
+        with self._active_write_lock:
+            if self._active_write_connection is not None:
+                try:
+                    yield self._active_write_connection
+                    self._active_write_connection.commit()
+                except Exception:
+                    self._active_write_connection.rollback()
+                    raise
+                return
+            connection = self._connect()
+            try:
+                yield connection
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+    def begin_active_write_session(self) -> None:
+        with self._active_write_lock:
+            if self._active_write_connection is None:
+                self._active_write_connection = self._connect()
+
+    def end_active_write_session(self) -> None:
+        with self._active_write_lock:
+            connection = self._active_write_connection
+            self._active_write_connection = None
+            if connection is None:
+                return
+            try:
+                connection.commit()
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._managed_connection() as connection:
@@ -155,7 +195,7 @@ class StatisticsRepository:
         source_label: str,
         camera_id: str,
     ) -> int:
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO sessions (started_at, source_type, source_label, camera_id)
@@ -166,7 +206,7 @@ class StatisticsRepository:
             return int(cursor.lastrowid)
 
     def finish_session(self, session_id: int, ended_at: float) -> None:
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.execute(
                 "UPDATE sessions SET ended_at = ? WHERE id = ?",
                 (ended_at, session_id),
@@ -189,7 +229,7 @@ class StatisticsRepository:
             )
             for visit in sessions
         ]
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO booth_visit_sessions (
@@ -226,7 +266,7 @@ class StatisticsRepository:
             )
         if not rows:
             return
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.executemany(
                 """
                 INSERT INTO zone_snapshots (
@@ -254,7 +294,7 @@ class StatisticsRepository:
             ],
             ensure_ascii=True,
         )
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO session_heatmaps (
