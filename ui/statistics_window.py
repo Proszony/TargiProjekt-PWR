@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -30,8 +30,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.models import AnalyticsSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig
+from core.models import AnalyticsSnapshot, HeatmapSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig, WorldViewport
 from core.statistics_repository import StatisticsRepository
+from core.zones import zone_color
+from ui.heatmap_rendering import draw_heatmap_cells
 from ui.style_system import COLORS, apply_chrome
 
 
@@ -313,6 +315,13 @@ class StatisticsWindow(QMainWindow):
         timeline_header.addStretch(1)
 
         self.history_timeline_chart = self._create_chart_view("Selected session occupancy timeline")
+        self.history_heatmap_preview = QLabel("No heatmap recorded")
+        self.history_heatmap_preview.setObjectName("HeatmapPreview")
+        self.history_heatmap_preview.setAlignment(Qt.AlignCenter)
+        self.history_heatmap_preview.setMinimumSize(320, 220)
+        self.history_heatmap_preview.setScaledContents(False)
+        self.history_heatmap_export_button = QPushButton("Export heatmap PNG")
+        self.history_heatmap_export_button.setEnabled(False)
 
         history_main_row = QHBoxLayout()
         history_main_row.setSpacing(12)
@@ -321,8 +330,12 @@ class StatisticsWindow(QMainWindow):
         history_timeline_panel = self._create_panel("Session timeline", "Selected booth occupancy across the session")
         history_timeline_panel.layout().addLayout(timeline_header)  # type: ignore[union-attr]
         history_timeline_panel.layout().addWidget(self.history_timeline_chart, 1)  # type: ignore[union-attr]
+        history_heatmap_panel = self._create_panel("Session heatmap", "Where tracked presences spent the most time")
+        history_heatmap_panel.layout().addWidget(self.history_heatmap_preview, 1)  # type: ignore[union-attr]
+        history_heatmap_panel.layout().addWidget(self.history_heatmap_export_button)  # type: ignore[union-attr]
         history_main_row.addWidget(history_table_panel, 7)
         history_main_row.addWidget(history_timeline_panel, 6)
+        history_main_row.addWidget(history_heatmap_panel, 5)
 
         layout.addLayout(top_row)
         layout.addWidget(self.history_summary_label)
@@ -333,6 +346,7 @@ class StatisticsWindow(QMainWindow):
         self.refresh_history_button.clicked.connect(self.reload_history)
         self.history_export_button.clicked.connect(self._export_history_csv)
         self.history_bundle_export_button.clicked.connect(self._export_current_session_bundle)
+        self.history_heatmap_export_button.clicked.connect(self._export_history_heatmap_png)
         self.session_selector.currentIndexChanged.connect(self._load_selected_session)
         self.history_timeline_zone_combo.currentTextChanged.connect(self._refresh_history_timeline)
 
@@ -501,6 +515,7 @@ class StatisticsWindow(QMainWindow):
             self.history_summary_label.setText("No recorded sessions")
             self._populate_metrics_table(self.history_table, [])
             self._populate_visit_sessions([])
+            self._set_history_heatmap_preview(None, None)
 
     def _load_selected_session(self) -> None:
         session_id = self.session_selector.currentData()
@@ -531,6 +546,7 @@ class StatisticsWindow(QMainWindow):
         self.history_timeline_zone_combo.blockSignals(False)
         self._refresh_history_timeline()
         self._populate_visit_sessions(self.repository.load_booth_visit_sessions(session_id))
+        self._set_history_heatmap_preview(session_id, self.repository.load_session_heatmap(session_id))
 
     def _refresh_live_timeline(self) -> None:
         if self.current_session_id is None or not self.isVisible():
@@ -685,7 +701,8 @@ class StatisticsWindow(QMainWindow):
             return
         summary_rows = self.repository.load_session_zone_metrics(session_id)
         visits_rows = self.repository.load_booth_visit_sessions(session_id)
-        if not summary_rows and not visits_rows:
+        heatmap = self.repository.load_session_heatmap(session_id)
+        if not summary_rows and not visits_rows and heatmap is None:
             QMessageBox.information(self, "Export", "There is no session data to export yet.")
             return
         target_dir = QFileDialog.getExistingDirectory(
@@ -718,11 +735,36 @@ class StatisticsWindow(QMainWindow):
             visits_path = output_dir / f"session_{session_id}_visit_sessions.csv"
             self._write_csv(visits_path, visit_rows)
             written_paths.append(visits_path)
+        if heatmap is not None:
+            heatmap_path = output_dir / f"session_{session_id}_heatmap.png"
+            self._write_heatmap_png(heatmap_path, heatmap)
+            written_paths.append(heatmap_path)
         QMessageBox.information(
             self,
             "Export",
             "Saved files:\n" + "\n".join(str(path) for path in written_paths),
         )
+
+    def _export_history_heatmap_png(self) -> None:
+        session_id = self.session_selector.currentData()
+        if not isinstance(session_id, int):
+            QMessageBox.information(self, "Export heatmap", "Select a history session first.")
+            return
+        heatmap = self.repository.load_session_heatmap(session_id)
+        if heatmap is None:
+            QMessageBox.information(self, "Export heatmap", "This session has no heatmap data.")
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export heatmap PNG",
+            str(Path.cwd() / f"session_{session_id}_heatmap.png"),
+            "PNG files (*.png)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        self._write_heatmap_png(path, heatmap)
+        QMessageBox.information(self, "Export heatmap", f"Saved PNG to:\n{path}")
 
     def _export_rows_to_csv(self, rows: list[dict[str, object]], default_name: str) -> None:
         if not rows:
@@ -747,6 +789,84 @@ class StatisticsWindow(QMainWindow):
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+
+    def _set_history_heatmap_preview(self, session_id: int | None, heatmap: HeatmapSnapshot | None) -> None:
+        self.history_heatmap_export_button.setEnabled(session_id is not None and heatmap is not None)
+        if heatmap is None:
+            self.history_heatmap_preview.setText("No heatmap recorded")
+            self.history_heatmap_preview.setPixmap(QPixmap())
+            return
+        image = self._render_heatmap_image(heatmap, 640, 420)
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.history_heatmap_preview.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.history_heatmap_preview.setText("")
+        self.history_heatmap_preview.setPixmap(pixmap)
+
+    def _write_heatmap_png(self, path: Path, heatmap: HeatmapSnapshot) -> None:
+        image = self._render_heatmap_image(heatmap, 1280, 900)
+        image.save(str(path), "PNG")
+
+    def _render_heatmap_image(self, heatmap: HeatmapSnapshot, width: int, height: int) -> QImage:
+        image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+        image.fill(QColor(COLORS["bg-canvas"]))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        content_rect = QRectF(18.0, 18.0, width - 36.0, height - 36.0)
+        background = QLinearGradient(content_rect.left(), content_rect.top(), content_rect.right(), content_rect.bottom())
+        background.setColorAt(0.0, QColor("#15222f"))
+        background.setColorAt(1.0, QColor("#0b1620"))
+        painter.fillRect(content_rect, background)
+
+        map_image = QImage(self.live_venue_map.map_image_path) if self.live_venue_map.map_image_path else QImage()
+        if not map_image.isNull():
+            painter.drawImage(content_rect, map_image)
+
+        def world_to_image(point: tuple[float, float], viewport: WorldViewport = heatmap.viewport) -> QPointF:
+            viewport_width = max(viewport.max_x - viewport.min_x, 1e-6)
+            viewport_height = max(viewport.max_y - viewport.min_y, 1e-6)
+            x = content_rect.left() + ((point[0] - viewport.min_x) / viewport_width) * content_rect.width()
+            y = content_rect.top() + ((point[1] - viewport.min_y) / viewport_height) * content_rect.height()
+            return QPointF(x, y)
+
+        viewport_width = max(heatmap.viewport.max_x - heatmap.viewport.min_x, 1e-6)
+        viewport_height = max(heatmap.viewport.max_y - heatmap.viewport.min_y, 1e-6)
+
+        def cell_rect(x_index: int, y_index: int) -> QRectF:
+            world_left = heatmap.viewport.min_x + (x_index / heatmap.columns) * viewport_width
+            world_right = heatmap.viewport.min_x + ((x_index + 1) / heatmap.columns) * viewport_width
+            world_top = heatmap.viewport.min_y + (y_index / heatmap.rows) * viewport_height
+            world_bottom = heatmap.viewport.min_y + ((y_index + 1) / heatmap.rows) * viewport_height
+            return QRectF(world_to_image((world_left, world_top)), world_to_image((world_right, world_bottom))).normalized()
+
+        draw_heatmap_cells(painter, heatmap, cell_rect)
+        self._draw_heatmap_zones(painter, world_to_image)
+        painter.end()
+        return image
+
+    def _draw_heatmap_zones(
+        self,
+        painter: QPainter,
+        world_to_image,
+    ) -> None:
+        for zone in self.live_venue_map.zones:
+            if len(zone.polygon_world) < 3:
+                continue
+            path = QPainterPath()
+            path.moveTo(world_to_image(zone.polygon_world[0]))
+            for point in zone.polygon_world[1:]:
+                path.lineTo(world_to_image(point))
+            path.closeSubpath()
+            color = QColor(zone_color(zone.kind))
+            color.setAlpha(86)
+            painter.fillPath(path, color)
+            pen = QPen(QColor(zone_color(zone.kind)), 2)
+            painter.setPen(pen)
+            painter.drawPath(path)
+            painter.setPen(QColor(COLORS["text-primary"]))
+            painter.drawText(world_to_image(zone.polygon_world[0]) + QPointF(8, -8), zone.name)
 
     @staticmethod
     def _create_metric_card(title: str, value: str, accent: str) -> tuple[QFrame, QLabel]:

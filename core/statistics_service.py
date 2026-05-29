@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.models import AnalyticsSnapshot, VenueMapConfig
+from core.models import AnalyticsSnapshot, HeatmapSnapshot, VenueMapConfig
 from core.statistics_repository import StatisticsRepository
 
 
@@ -29,6 +29,14 @@ class StatisticsService:
     def finish_session(self, ended_at: float) -> None:
         if self.current_session_id is None:
             return
+        self.repository.finish_session(self.current_session_id, ended_at)
+        self.current_session_id = None
+
+    def finish_session_with_heatmap(self, ended_at: float, heatmap_snapshot: HeatmapSnapshot | None) -> None:
+        if self.current_session_id is None:
+            return
+        if heatmap_snapshot is not None:
+            self.repository.record_session_heatmap(self.current_session_id, heatmap_snapshot)
         self.repository.finish_session(self.current_session_id, ended_at)
         self.current_session_id = None
 

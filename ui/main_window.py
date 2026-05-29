@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.map_coverage_button = self._build_toggle_button("Coverage", checked=True)
         self.map_people_button = self._build_toggle_button("People", checked=True)
         self.map_overlap_button = self._build_toggle_button("Overlap", checked=False)
+        self.map_heatmap_button = self._build_toggle_button("Heatmap", checked=False)
 
         self.start_button.setProperty("kind", "primary")
         self.stop_button.setProperty("kind", "danger")
@@ -157,6 +158,7 @@ class MainWindow(QMainWindow):
         self.map_view.set_show_coverages(self.map_coverage_button.isChecked())
         self.map_view.set_show_overlaps(self.map_overlap_button.isChecked())
         self.map_view.set_show_tracks(self.map_people_button.isChecked())
+        self.map_view.set_show_heatmap(self.map_heatmap_button.isChecked())
 
         camera_workspace = QFrame()
         camera_workspace.setObjectName("workspacePanel")
@@ -181,6 +183,7 @@ class MainWindow(QMainWindow):
         map_controls.addWidget(self.map_coverage_button)
         map_controls.addWidget(self.map_people_button)
         map_controls.addWidget(self.map_overlap_button)
+        map_controls.addWidget(self.map_heatmap_button)
         map_controls.addStretch(1)
         map_controls.addWidget(self.map_focus_label)
         map_layout.addLayout(map_controls)
@@ -424,6 +427,7 @@ class MainWindow(QMainWindow):
         self.map_coverage_button.toggled.connect(self.map_view.set_show_coverages)
         self.map_overlap_button.toggled.connect(self.map_view.set_show_overlaps)
         self.map_people_button.toggled.connect(self.map_view.set_show_tracks)
+        self.map_heatmap_button.toggled.connect(self.map_view.set_show_heatmap)
         self.map_view.zone_created.connect(self._handle_zone_created)
         self.map_view.zone_updated.connect(self._handle_zone_updated)
         self.map_view.zone_edit_cancelled.connect(self._handle_zone_edit_cancelled)
@@ -659,20 +663,20 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_statistics_window(self) -> None:
-        self.statistics_window.reload_history()
         self.statistics_window.set_live_snapshot(self.last_snapshot, self.project_config.venue_map)
         self.statistics_window.set_runtime_snapshot(self.last_runtime_snapshot)
         self.statistics_window.set_current_session_id(self.statistics_service.current_session_id)
+        self.statistics_window.reload_history()
         self.statistics_window.show()
         self.statistics_window.raise_()
         self.statistics_window.activateWindow()
 
     @Slot()
     def export_statistics(self) -> None:
-        self.statistics_window.reload_history()
         self.statistics_window.set_live_snapshot(self.last_snapshot, self.project_config.venue_map)
         self.statistics_window.set_runtime_snapshot(self.last_runtime_snapshot)
         self.statistics_window.set_current_session_id(self.statistics_service.current_session_id)
+        self.statistics_window.reload_history()
         self.statistics_window.export_preferred()
 
     @Slot()

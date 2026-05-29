@@ -96,6 +96,9 @@ class ConfigCompatibilityTests(unittest.TestCase):
             self.assertNotIn("tracker_backend", saved_camera)
             self.assertEqual(saved_venue["map_image_path"], "venue.png")
             self.assertEqual(project.analytics.zone_entry_min_duration_s, 0.45)
+            self.assertTrue(project.analytics.heatmap_enabled)
+            self.assertEqual(project.analytics.heatmap_sample_interval_s, 0.5)
+            self.assertEqual(project.analytics.heatmap_grid_columns, 160)
             self.assertTrue(project.distributed_runtime.enabled)
             self.assertEqual(project.distributed_runtime.server_port, 6201)
 
@@ -106,6 +109,11 @@ class ConfigCompatibilityTests(unittest.TestCase):
             project = repo.ensure_defaults()
             project.analytics.zone_entry_min_duration_s = 0.6
             project.analytics.zone_exit_grace_s = 1.1
+            project.analytics.heatmap_enabled = False
+            project.analytics.heatmap_sample_interval_s = 2.0
+            project.analytics.heatmap_grid_columns = 96
+            project.analytics.heatmap_min_rows = 24
+            project.analytics.heatmap_max_rows = 120
             project.cameras[0].source_type = "file"
             project.cameras[0].source_value = "/tmp/demo.mp4"
             project.cameras[0].loop_file = True
@@ -119,6 +127,11 @@ class ConfigCompatibilityTests(unittest.TestCase):
             self.assertTrue(loaded.cameras[0].loop_file)
             self.assertTrue(loaded.playback_sync.enabled_for_file_sources)
             self.assertTrue(loaded.reid.enabled)
+            self.assertFalse(loaded.analytics.heatmap_enabled)
+            self.assertEqual(loaded.analytics.heatmap_sample_interval_s, 2.0)
+            self.assertEqual(loaded.analytics.heatmap_grid_columns, 96)
+            self.assertEqual(loaded.analytics.heatmap_min_rows, 24)
+            self.assertEqual(loaded.analytics.heatmap_max_rows, 120)
 
     def test_world_only_coverage_is_ignored_on_load(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

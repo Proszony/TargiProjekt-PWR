@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.config_models import CameraOverlapGraph, Point
+from core.config_models import CameraOverlapGraph, Point, WorldViewport
 
 
 @dataclass(slots=True)
@@ -135,6 +135,24 @@ class ZoneMetrics:
 
 
 @dataclass(slots=True)
+class HeatmapCell:
+    x_index: int
+    y_index: int
+    dwell_s: float
+
+
+@dataclass(slots=True)
+class HeatmapSnapshot:
+    timestamp: float
+    viewport: WorldViewport
+    columns: int
+    rows: int
+    max_dwell_s: float = 0.0
+    total_dwell_s: float = 0.0
+    cells: list[HeatmapCell] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class AnalyticsSnapshot:
     timestamp: float
     active_zone_counts: dict[str, int] = field(default_factory=dict)
@@ -150,6 +168,7 @@ class AnalyticsSnapshot:
     total_entries: int = 0
     total_current_occupancy: int = 0
     zone_metrics: dict[str, ZoneMetrics] = field(default_factory=dict)
+    heatmap_snapshot: HeatmapSnapshot | None = None
 
 
 @dataclass(slots=True)

@@ -26,6 +26,7 @@ from core.models import (
     ZoneDefinition,
 )
 from core.zones import zone_color
+from ui.heatmap_rendering import draw_heatmap_cells
 
 
 class MapView(QWidget):
@@ -62,6 +63,7 @@ class MapView(QWidget):
         self._show_coverages = True
         self._show_overlaps = True
         self._show_tracks = True
+        self._show_heatmap = False
         self._handle_radius = 8.0
         self.setMinimumSize(360, 240)
         self.setMouseTracking(True)
@@ -108,6 +110,10 @@ class MapView(QWidget):
 
     def set_show_tracks(self, visible: bool) -> None:
         self._show_tracks = visible
+        self.update()
+
+    def set_show_heatmap(self, visible: bool) -> None:
+        self._show_heatmap = visible
         self.update()
 
     def set_mode(self, mode: Literal["view", "pick_points", "draw_zone", "edit_zone"]) -> None:
@@ -171,6 +177,7 @@ class MapView(QWidget):
         self._content_rect = self._calculate_content_rect()
         self._paint_background(painter)
         self._paint_grid(painter)
+        self._paint_heatmap(painter)
         self._paint_camera_coverages(painter)
         self._paint_camera_overlaps(painter)
         self._paint_zones(painter)
@@ -349,6 +356,26 @@ class MapView(QWidget):
             y = self._content_rect.top() + self._content_rect.height() * step / 10.0
             painter.drawLine(QPointF(x, self._content_rect.top()), QPointF(x, self._content_rect.bottom()))
             painter.drawLine(QPointF(self._content_rect.left(), y), QPointF(self._content_rect.right(), y))
+
+    def _paint_heatmap(self, painter: QPainter) -> None:
+        if not self._show_heatmap:
+            return
+        heatmap = self.analytics_snapshot.heatmap_snapshot
+        if heatmap is None:
+            return
+        viewport_width = max(heatmap.viewport.max_x - heatmap.viewport.min_x, 1e-6)
+        viewport_height = max(heatmap.viewport.max_y - heatmap.viewport.min_y, 1e-6)
+
+        def cell_rect(x_index: int, y_index: int) -> QRectF:
+            world_left = heatmap.viewport.min_x + (x_index / heatmap.columns) * viewport_width
+            world_right = heatmap.viewport.min_x + ((x_index + 1) / heatmap.columns) * viewport_width
+            world_top = heatmap.viewport.min_y + (y_index / heatmap.rows) * viewport_height
+            world_bottom = heatmap.viewport.min_y + ((y_index + 1) / heatmap.rows) * viewport_height
+            top_left = self.world_to_widget((world_left, world_top))
+            bottom_right = self.world_to_widget((world_right, world_bottom))
+            return QRectF(top_left, bottom_right).normalized()
+
+        draw_heatmap_cells(painter, heatmap, cell_rect)
 
     def _paint_zones(self, painter: QPainter) -> None:
         for zone in self.venue_map.zones:

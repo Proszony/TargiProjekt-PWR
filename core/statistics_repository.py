@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from core.models import AnalyticsSnapshot, BoothVisitSession, VenueMapConfig
+from core.models import AnalyticsSnapshot, BoothVisitSession, HeatmapCell, HeatmapSnapshot, VenueMapConfig, WorldViewport
 
 
 class StatisticsRepository:
@@ -43,6 +43,16 @@ class StatisticsRepository:
             "avg_dwell_s",
             "median_dwell_s",
             "peak_occupancy",
+        },
+        "session_heatmaps": {
+            "session_id",
+            "created_at",
+            "viewport_json",
+            "columns",
+            "rows",
+            "max_dwell_s",
+            "total_dwell_s",
+            "cells_json",
         },
     }
 
@@ -107,6 +117,18 @@ class StatisticsRepository:
                     avg_dwell_s REAL NOT NULL,
                     median_dwell_s REAL NOT NULL,
                     peak_occupancy INTEGER NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS session_heatmaps (
+                    session_id INTEGER PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    viewport_json TEXT NOT NULL,
+                    columns INTEGER NOT NULL,
+                    rows INTEGER NOT NULL,
+                    max_dwell_s REAL NOT NULL,
+                    total_dwell_s REAL NOT NULL,
+                    cells_json TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                 );
                 """
@@ -216,6 +238,43 @@ class StatisticsRepository:
                 rows,
             )
 
+    def record_session_heatmap(self, session_id: int, heatmap: HeatmapSnapshot) -> None:
+        if heatmap.columns <= 0 or heatmap.rows <= 0:
+            return
+        viewport_json = json.dumps(heatmap.viewport.to_dict(), ensure_ascii=True)
+        cells_json = json.dumps(
+            [
+                {
+                    "x_index": cell.x_index,
+                    "y_index": cell.y_index,
+                    "dwell_s": cell.dwell_s,
+                }
+                for cell in heatmap.cells
+                if cell.dwell_s > 0.0
+            ],
+            ensure_ascii=True,
+        )
+        with self._managed_connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO session_heatmaps (
+                    session_id, created_at, viewport_json, columns, rows,
+                    max_dwell_s, total_dwell_s, cells_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    heatmap.timestamp,
+                    viewport_json,
+                    heatmap.columns,
+                    heatmap.rows,
+                    heatmap.max_dwell_s,
+                    heatmap.total_dwell_s,
+                    cells_json,
+                ),
+            )
+
     def list_sessions(self) -> list[dict[str, object]]:
         with self._managed_connection() as connection:
             rows = connection.execute(
@@ -275,3 +334,35 @@ class StatisticsRepository:
                 (session_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def load_session_heatmap(self, session_id: int) -> HeatmapSnapshot | None:
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT created_at, viewport_json, columns, rows, max_dwell_s, total_dwell_s, cells_json
+                FROM session_heatmaps
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        viewport = WorldViewport.from_dict(json.loads(str(row["viewport_json"])))
+        cells_data = json.loads(str(row["cells_json"]))
+        cells = [
+            HeatmapCell(
+                x_index=int(item["x_index"]),
+                y_index=int(item["y_index"]),
+                dwell_s=float(item["dwell_s"]),
+            )
+            for item in cells_data
+        ]
+        return HeatmapSnapshot(
+            timestamp=float(row["created_at"]),
+            viewport=viewport,
+            columns=int(row["columns"]),
+            rows=int(row["rows"]),
+            max_dwell_s=float(row["max_dwell_s"]),
+            total_dwell_s=float(row["total_dwell_s"]),
+            cells=cells,
+        )

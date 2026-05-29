@@ -7,18 +7,23 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
 from core import runtime_defaults as rd
+from core.calibration import compute_world_viewport
 from core.camera_overlap import build_camera_overlap_graph
 from core.distributed_server import DistributedRuntimeServer
+from core.heatmap import HeatmapAccumulator
 from core.media_sync import MultiCameraMediaSynchronizer
 from core.metrics import AnalyticsEngine
 from core.models import (
     AnalyticsSnapshot,
     CameraConfig,
     CameraTrackingPacket,
+    HeatmapSnapshot,
     MapPresence,
     MultiCameraRuntimeSnapshot,
+    Point,
     ProjectConfig,
     SynchronizedCameraFrameSet,
+    WorldViewport,
 )
 from core.statistics_service import StatisticsService
 from core.streaming import CameraPipelineWorker
@@ -55,6 +60,14 @@ class MultiCameraPipelineManager(QObject):
             zone_entry_min_duration_s=project_config.analytics.zone_entry_min_duration_s,
             zone_exit_grace_s=project_config.analytics.zone_exit_grace_s,
         )
+        self._heatmap = HeatmapAccumulator(
+            enabled=project_config.analytics.heatmap_enabled,
+            sample_interval_s=project_config.analytics.heatmap_sample_interval_s,
+            grid_columns=project_config.analytics.heatmap_grid_columns,
+            min_rows=project_config.analytics.heatmap_min_rows,
+            max_rows=project_config.analytics.heatmap_max_rows,
+        )
+        self._last_heatmap_snapshot: HeatmapSnapshot | None = None
         self._last_snapshot_persisted_at = 0.0
         self._running = False
         self._sync_timer = QTimer(self)
@@ -70,6 +83,7 @@ class MultiCameraPipelineManager(QObject):
         self._analytics.venue_map = self.project_config.venue_map
         self._analytics.zone_entry_min_duration_s = self.project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = self.project_config.analytics.zone_exit_grace_s
+        self._configure_heatmap()
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
         stale_camera_ids = set(self._packets) - set(camera_lookup)
         for camera_id in stale_camera_ids:
@@ -142,6 +156,9 @@ class MultiCameraPipelineManager(QObject):
         self._running = True
         self._packets.clear()
         self._analytics.reset()
+        self._configure_heatmap()
+        self._heatmap.reset(self._build_heatmap_viewport())
+        self._last_heatmap_snapshot = self._heatmap.snapshot(0.0)
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
         self._latest_remote_preview_images.clear()
@@ -223,6 +240,7 @@ class MultiCameraPipelineManager(QObject):
         self._analytics.venue_map = project_config.venue_map
         self._analytics.zone_entry_min_duration_s = project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = project_config.analytics.zone_exit_grace_s
+        self._configure_heatmap()
         for camera in project_config.cameras:
             worker = self._workers.get(camera.camera_id)
             if worker is not None:
@@ -381,6 +399,13 @@ class MultiCameraPipelineManager(QObject):
         overlap_graph = build_camera_overlap_graph(self.project_config.cameras, self.project_config.overlap_dedup)
         map_presences = self._build_local_map_presences(camera_packets)
         analytics_snapshot = self._analytics.update(timestamp, map_presences)
+        heatmap_snapshot = self._heatmap.update(
+            timestamp,
+            analytics_snapshot.active_map_presences,
+            self._build_heatmap_viewport(),
+        )
+        analytics_snapshot.heatmap_snapshot = heatmap_snapshot
+        self._last_heatmap_snapshot = heatmap_snapshot
         labels_by_camera = self._build_operator_labels(camera_packets)
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
         self._latest_remote_labels_by_camera = {
@@ -578,5 +603,56 @@ class MultiCameraPipelineManager(QObject):
             return
         if self._threads:
             return
-        self.statistics_service.finish_session(time.time())
+        self.statistics_service.finish_session_with_heatmap(time.time(), self._last_heatmap_snapshot)
         self.stopped.emit()
+
+    def _configure_heatmap(self) -> None:
+        analytics = self.project_config.analytics
+        self._heatmap.configure(
+            enabled=analytics.heatmap_enabled,
+            sample_interval_s=analytics.heatmap_sample_interval_s,
+            grid_columns=analytics.heatmap_grid_columns,
+            min_rows=analytics.heatmap_min_rows,
+            max_rows=analytics.heatmap_max_rows,
+        )
+
+    def _build_heatmap_viewport(self) -> WorldViewport:
+        zone_polygons = [
+            zone.polygon_world
+            for zone in self.project_config.venue_map.zones
+            if len(zone.polygon_world) >= 3
+        ]
+        if zone_polygons or self.project_config.venue_map.manual_viewport_override is not None:
+            return compute_world_viewport(
+                [],
+                self.project_config.venue_map.zones,
+                padding_ratio=0.12,
+                manual_override=self.project_config.venue_map.manual_viewport_override,
+            )
+        anchor_points = [anchor.world_point for anchor in self.project_config.shared_anchors]
+        if anchor_points:
+            return self._viewport_from_points(anchor_points)
+        return compute_world_viewport(
+            self.project_config.cameras,
+            self.project_config.venue_map.zones,
+            manual_override=self.project_config.venue_map.manual_viewport_override,
+        )
+
+    @staticmethod
+    def _viewport_from_points(points: list[Point]) -> WorldViewport:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+        pad_x = span_x * 0.12
+        pad_y = span_y * 0.12
+        return WorldViewport(
+            min_x=min_x - pad_x,
+            min_y=min_y - pad_y,
+            max_x=max_x + pad_x,
+            max_y=max_y + pad_y,
+        )
