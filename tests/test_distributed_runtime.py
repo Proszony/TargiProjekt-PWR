@@ -191,7 +191,7 @@ class DistributedRuntimeTests(unittest.TestCase):
 
             self.assertIn(("camera-remote", 17.5), fps_updates)
 
-    def test_local_operator_preview_is_throttled_without_skipping_analytics(self) -> None:
+    def test_local_operator_preview_uses_worker_gated_frames_without_skipping_analytics(self) -> None:
         if QImage is None or QColor is None:
             self.skipTest("Qt image helpers unavailable.")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -238,7 +238,6 @@ class DistributedRuntimeTests(unittest.TestCase):
             second_packet.local_tracks[1].last_bbox_xyxy_for_matching = None
             manager._handle_camera_frame("camera-local", 1, frame)
             manager._handle_camera_packet(first_packet)
-            manager._handle_camera_frame("camera-local", 2, frame)
             manager._handle_camera_packet(second_packet)
 
             self.assertEqual(len(rendered_frames), 1)

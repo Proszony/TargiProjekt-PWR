@@ -166,6 +166,7 @@ class DistributedCameraWorker:
             file_playback_started_wall_time=file_playback_started_wall_time,
             confidence=0.18,
             inference_size=736,
+            preview_fps=self.project_config.distributed_runtime.preview_fps,
             on_frame_ready=self._handle_frame_ready,
             on_camera_packet_ready=self._handle_camera_packet,
             on_status_changed=self._handle_status_changed,
