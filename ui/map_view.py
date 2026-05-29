@@ -64,6 +64,8 @@ class MapView(QWidget):
         self._show_overlaps = True
         self._show_tracks = True
         self._show_heatmap = False
+        self._heatmap_layer_cache = QImage()
+        self._heatmap_layer_cache_key: tuple[object, ...] | None = None
         self._handle_radius = 8.0
         self.setMinimumSize(360, 240)
         self.setMouseTracking(True)
@@ -82,6 +84,7 @@ class MapView(QWidget):
 
     def set_world_viewport(self, viewport: WorldViewport) -> None:
         self._world_viewport = viewport
+        self._clear_heatmap_layer_cache()
         self.update()
 
     def set_snapshot(self, snapshot: AnalyticsSnapshot) -> None:
@@ -363,6 +366,21 @@ class MapView(QWidget):
         heatmap = self.analytics_snapshot.heatmap_snapshot
         if heatmap is None:
             return
+        cache_key = self._heatmap_layer_key()
+        if self._heatmap_layer_cache.isNull() or self._heatmap_layer_cache_key != cache_key:
+            self._heatmap_layer_cache = self._render_heatmap_layer()
+            self._heatmap_layer_cache_key = cache_key
+        if not self._heatmap_layer_cache.isNull():
+            painter.drawImage(0, 0, self._heatmap_layer_cache)
+
+    def _render_heatmap_layer(self) -> QImage:
+        heatmap = self.analytics_snapshot.heatmap_snapshot
+        if heatmap is None:
+            return QImage()
+        layer = QImage(self.size(), QImage.Format_ARGB32_Premultiplied)
+        layer.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(layer)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         viewport_width = max(heatmap.viewport.max_x - heatmap.viewport.min_x, 1e-6)
         viewport_height = max(heatmap.viewport.max_y - heatmap.viewport.min_y, 1e-6)
 
@@ -376,6 +394,28 @@ class MapView(QWidget):
             return QRectF(top_left, bottom_right).normalized()
 
         draw_heatmap_cells(painter, heatmap, cell_rect)
+        painter.end()
+        return layer
+
+    def _heatmap_layer_key(self) -> tuple[object, ...] | None:
+        heatmap = self.analytics_snapshot.heatmap_snapshot
+        if heatmap is None:
+            return None
+        return (
+            id(heatmap),
+            self.width(),
+            self.height(),
+            round(self._content_rect.left(), 3),
+            round(self._content_rect.top(), 3),
+            round(self._content_rect.width(), 3),
+            round(self._content_rect.height(), 3),
+            heatmap.columns,
+            heatmap.rows,
+        )
+
+    def _clear_heatmap_layer_cache(self) -> None:
+        self._heatmap_layer_cache = QImage()
+        self._heatmap_layer_cache_key = None
 
     def _paint_zones(self, painter: QPainter) -> None:
         for zone in self.venue_map.zones:
