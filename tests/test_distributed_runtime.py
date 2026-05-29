@@ -256,7 +256,7 @@ class DistributedRuntimeTests(unittest.TestCase):
             self.assertEqual(len(rendered_frames), 1)
             self.assertEqual(len(snapshots), 2)
 
-    def test_remote_preview_refreshes_even_when_packet_frame_index_differs(self) -> None:
+    def test_remote_preview_refreshes_when_labels_change_without_packet_frame_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             project = ProjectConfig(
@@ -290,7 +290,43 @@ class DistributedRuntimeTests(unittest.TestCase):
                 )
             )
 
-            self.assertGreaterEqual(len(rendered_frames), 2)
+            self.assertEqual(len(rendered_frames), 2)
+
+    def test_remote_preview_skips_relabel_when_preview_and_labels_are_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-remote",
+                        runtime_mode="remote",
+                        remote_worker_id="edge-1",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+                distributed_runtime=DistributedRuntimeConfig(enabled=True),
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            rendered_frames: list[QImage] = []
+            manager.camera_frame_ready.connect(
+                lambda camera_id, image: rendered_frames.append(image)
+                if camera_id == "camera-remote" and isinstance(image, QImage)
+                else None
+            )
+
+            manager._handle_remote_preview_frame(_jpeg_preview("camera-remote", frame_index=10))
+            packet = _packet(
+                "camera-remote",
+                "camera-remote:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=12,
+            )
+            manager._handle_remote_packet(packet)
+            manager._handle_remote_packet(packet)
+
+            self.assertEqual(len(rendered_frames), 2)
 
 
 if __name__ == "__main__":

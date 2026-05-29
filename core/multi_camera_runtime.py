@@ -55,7 +55,12 @@ class MultiCameraPipelineManager(QObject):
         self._packets: dict[str, CameraTrackingPacket] = {}
         self._frame_images: dict[str, dict[int, object]] = {}
         self._latest_remote_preview_images: dict[str, QImage] = {}
+        self._latest_remote_preview_frame_indices: dict[str, int] = {}
         self._latest_remote_labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
+        self._labeled_remote_preview_cache: dict[
+            str,
+            tuple[int, tuple[tuple[tuple[int, int, int, int], str], ...], QImage],
+        ] = {}
         self._analytics = AnalyticsEngine(
             venue_map=project_config.venue_map,
             zone_entry_min_duration_s=project_config.analytics.zone_entry_min_duration_s,
@@ -96,7 +101,9 @@ class MultiCameraPipelineManager(QObject):
             self._packets.pop(camera_id, None)
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_preview_frame_indices.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._labeled_remote_preview_cache.pop(camera_id, None)
         active_local_camera_ids = {
             camera.camera_id
             for camera in self.project_config.cameras
@@ -115,7 +122,9 @@ class MultiCameraPipelineManager(QObject):
             self._packets.pop(camera_id, None)
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_preview_frame_indices.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._labeled_remote_preview_cache.pop(camera_id, None)
         for camera_id, worker in self._workers.items():
             camera = camera_lookup.get(camera_id)
             if camera is None:
@@ -168,7 +177,9 @@ class MultiCameraPipelineManager(QObject):
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
         self._latest_remote_preview_images.clear()
+        self._latest_remote_preview_frame_indices.clear()
         self._latest_remote_labels_by_camera.clear()
+        self._labeled_remote_preview_cache.clear()
         self._session_started_at_unix_s = time.time()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
@@ -338,8 +349,8 @@ class MultiCameraPipelineManager(QObject):
         if image.isNull():
             return
         self._latest_remote_preview_images[camera_id] = image
-        labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
-        self.camera_frame_ready.emit(camera_id, labeled)
+        self._latest_remote_preview_frame_indices[camera_id] = frame_index
+        self._emit_labeled_remote_preview_if_changed(camera_id)
 
     @Slot(str, str)
     def _handle_remote_camera_status(self, camera_id: str, status_text: str) -> None:
@@ -420,9 +431,8 @@ class MultiCameraPipelineManager(QObject):
             for camera_id, camera in camera_lookup.items()
             if camera.runtime_mode == "remote"
         }
-        for camera_id, image in self._latest_remote_preview_images.items():
-            labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
-            self.camera_frame_ready.emit(camera_id, labeled)
+        for camera_id in self._latest_remote_preview_images:
+            self._emit_labeled_remote_preview_if_changed(camera_id)
         runtime_snapshot = MultiCameraRuntimeSnapshot(
             timestamp=timestamp,
             analytics_snapshot=analytics_snapshot,
@@ -532,6 +542,36 @@ class MultiCameraPipelineManager(QObject):
                 )
         return labels_by_camera
 
+    def _emit_labeled_remote_preview_if_changed(self, camera_id: str) -> None:
+        image = self._latest_remote_preview_images.get(camera_id)
+        frame_index = self._latest_remote_preview_frame_indices.get(camera_id)
+        if image is None or frame_index is None:
+            return
+        labels_signature = self._operator_labels_signature(
+            self._latest_remote_labels_by_camera.get(camera_id, [])
+        )
+        cached = self._labeled_remote_preview_cache.get(camera_id)
+        if (
+            cached is not None
+            and cached[0] == frame_index
+            and cached[1] == labels_signature
+        ):
+            return
+        labeled = self._draw_operator_labels(image, list(labels_signature))
+        self._labeled_remote_preview_cache[camera_id] = (frame_index, labels_signature, labeled)
+        self.camera_frame_ready.emit(camera_id, labeled)
+
+    @staticmethod
+    def _operator_labels_signature(
+        labels: list[tuple[tuple[int, int, int, int], str]],
+    ) -> tuple[tuple[tuple[int, int, int, int], str], ...]:
+        normalized = [
+            ((int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])), str(label))
+            for bbox, label in labels
+            if label
+        ]
+        return tuple(sorted(normalized, key=lambda item: (item[1], item[0])))
+
     @staticmethod
     def _draw_operator_labels(
         image: QImage,
@@ -582,7 +622,9 @@ class MultiCameraPipelineManager(QObject):
         self._packets.pop(camera_id, None)
         self._frame_images.pop(camera_id, None)
         self._latest_remote_preview_images.pop(camera_id, None)
+        self._latest_remote_preview_frame_indices.pop(camera_id, None)
         self._latest_remote_labels_by_camera.pop(camera_id, None)
+        self._labeled_remote_preview_cache.pop(camera_id, None)
         if self._running and self._workers:
             return
         self._finish_stop_if_possible()
