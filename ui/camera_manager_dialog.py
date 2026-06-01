@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
@@ -87,6 +88,9 @@ class CameraEditorDialog(QDialog):
         self.project_mp4_combo.addItem("Use external path or stream value", "")
         for path in sorted(self._project_root.glob("*.mp4")):
             self.project_mp4_combo.addItem(path.name, path.name)
+        self.udp_port_spin = QSpinBox()
+        self.udp_port_spin.setRange(1, 65535)
+        self.udp_port_spin.setValue(5000)
         self.source_value_input = QLineEdit()
         self.source_value_input.setPlaceholderText("UDP URL, project MP4 filename, or external file path")
         self.browse_source_button = QPushButton("Browse external...")
@@ -117,9 +121,13 @@ class CameraEditorDialog(QDialog):
         form.addRow("Display order", self.display_order_spin)
         form.addRow("Runtime mode", self.runtime_mode_combo)
         form.addRow("Remote worker ID", self.remote_worker_id_input)
+        self.project_mp4_label = QLabel("Project MP4")
+        self.udp_port_label = QLabel("UDP port")
+        self.source_label = QLabel("Source")
         form.addRow("Source type", self.source_type_combo)
-        form.addRow("Project MP4", self.project_mp4_combo)
-        form.addRow("Source", source_row)
+        form.addRow(self.project_mp4_label, self.project_mp4_combo)
+        form.addRow(self.udp_port_label, self.udp_port_spin)
+        form.addRow(self.source_label, source_row)
         form.addRow("", self.loop_file_checkbox)
         form.addRow("Detector model", self.detector_model_combo)
         form.addRow("Overlap cameras", overlap_widget)
@@ -144,6 +152,7 @@ class CameraEditorDialog(QDialog):
         self.runtime_mode_combo.currentIndexChanged.connect(self._update_source_controls)
         self.source_type_combo.currentIndexChanged.connect(self._update_source_controls)
         self.project_mp4_combo.currentIndexChanged.connect(self._select_project_mp4)
+        self.udp_port_spin.valueChanged.connect(self._update_udp_source_value)
         self.browse_source_button.clicked.connect(self._browse_source)
 
     def _load_values(self) -> None:
@@ -156,6 +165,7 @@ class CameraEditorDialog(QDialog):
         self.remote_worker_id_input.setText(self._camera.remote_worker_id)
         self.source_type_combo.setCurrentIndex(0 if self._camera.source_type == "udp" else 1)
         self.source_value_input.setText(self._camera.source_value)
+        self.udp_port_spin.setValue(self._udp_port_from_source(self._camera.source_value))
         project_mp4_index = self.project_mp4_combo.findData(self._camera.source_value)
         if project_mp4_index >= 0:
             self.project_mp4_combo.setCurrentIndex(project_mp4_index)
@@ -171,9 +181,17 @@ class CameraEditorDialog(QDialog):
         file_mode = self.source_type_combo.currentData() == "file"
         remote_mode = self.runtime_mode_combo.currentData() == "remote"
         self.remote_worker_id_input.setEnabled(remote_mode)
+        self.project_mp4_label.setVisible(file_mode)
         self.project_mp4_combo.setVisible(file_mode)
+        self.udp_port_label.setVisible(not file_mode)
+        self.udp_port_spin.setVisible(not file_mode)
         self.browse_source_button.setVisible(file_mode)
         self.loop_file_checkbox.setVisible(file_mode)
+        if file_mode:
+            self.source_value_input.setPlaceholderText("Project MP4 filename or external file path")
+        else:
+            self.source_value_input.setPlaceholderText("UDP URL")
+            self._update_udp_source_value()
 
     @Slot()
     def _select_project_mp4(self) -> None:
@@ -194,18 +212,28 @@ class CameraEditorDialog(QDialog):
             self.project_mp4_combo.setCurrentIndex(0)
 
     @Slot()
+    def _update_udp_source_value(self, *_args: object) -> None:
+        if self.source_type_combo.currentData() == "udp":
+            self.source_value_input.setText(f"udp://0.0.0.0:{self.udp_port_spin.value()}")
+
+    @Slot()
     def _accept_if_valid(self) -> None:
         camera_id = self.camera_id_input.text().strip()
         if not camera_id:
             QMessageBox.warning(self, "Invalid camera", "Camera ID must not be empty.")
             return
-        source_value = self.source_value_input.text().strip()
+        source_type = str(self.source_type_combo.currentData())
+        source_value = (
+            f"udp://0.0.0.0:{self.udp_port_spin.value()}"
+            if source_type == "udp"
+            else self.source_value_input.text().strip()
+        )
         if not source_value:
             QMessageBox.warning(self, "Invalid source", "Source must not be empty.")
             return
         if (
             self.runtime_mode_combo.currentData() == "local"
-            and self.source_type_combo.currentData() == "file"
+            and source_type == "file"
             and not self._source_file_exists(source_value)
         ):
             QMessageBox.warning(self, "Missing file", "Selected video file does not exist.")
@@ -220,7 +248,7 @@ class CameraEditorDialog(QDialog):
             self.remote_worker_id_input.text().strip() if self._camera.runtime_mode == "remote" else ""
         )
         self._camera.detector_model_path = str(self.detector_model_combo.currentData())
-        self._camera.source_type = str(self.source_type_combo.currentData())
+        self._camera.source_type = source_type
         self._camera.source_value = source_value
         self._camera.loop_file = self.loop_file_checkbox.isChecked() if self._camera.source_type == "file" else False
         self._camera.overlap_camera_ids = [
@@ -233,6 +261,14 @@ class CameraEditorDialog(QDialog):
         if path.is_absolute():
             return path.exists()
         return (self._project_root / path).exists()
+
+    @staticmethod
+    def _udp_port_from_source(source_value: str) -> int:
+        try:
+            port = urlparse(source_value).port
+        except ValueError:
+            port = None
+        return port if port is not None else 5000
 
 
 class CameraManagerDialog(QDialog):

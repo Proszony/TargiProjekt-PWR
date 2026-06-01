@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -7,6 +9,7 @@ try:
     from PySide6.QtWidgets import QApplication, QSizePolicy
 
     from core.models import CameraConfig
+    from ui.camera_manager_dialog import CameraEditorDialog
     from ui.camera_grid_view import CameraGridView
 except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
     CameraGridView = None
@@ -45,6 +48,46 @@ class CameraGridLayoutTests(unittest.TestCase):
 
         self.assertEqual(grid.selected_camera_id(), "camera-1")
         self.assertEqual(grid.selected_camera_state().camera_id, "camera-1")
+
+
+@unittest.skipIf(CameraGridView is None, f"UI dependencies unavailable: {_IMPORT_ERROR}")
+class CameraEditorDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls._app = QApplication.instance() or QApplication([])
+
+    def test_project_mp4_row_is_hidden_for_udp_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dialog = CameraEditorDialog(
+                CameraConfig(source_type="udp", source_value="udp://0.0.0.0:5012"),
+                all_camera_ids=[],
+                detector_models=[("Detector", "model.pt")],
+                project_root=Path(temp_dir),
+            )
+
+            self.assertTrue(dialog.project_mp4_label.isHidden())
+            self.assertTrue(dialog.project_mp4_combo.isHidden())
+            self.assertFalse(dialog.udp_port_label.isHidden())
+            self.assertFalse(dialog.udp_port_spin.isHidden())
+            self.assertEqual(dialog.udp_port_spin.value(), 5012)
+
+    def test_udp_port_sets_source_value_on_accept(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dialog = CameraEditorDialog(
+                CameraConfig(source_type="file", source_value="demo.mp4"),
+                all_camera_ids=[],
+                detector_models=[("Detector", "model.pt")],
+                project_root=Path(temp_dir),
+            )
+            dialog.source_type_combo.setCurrentIndex(0)
+            dialog.udp_port_spin.setValue(6024)
+
+            dialog._accept_if_valid()
+
+            self.assertEqual(dialog.camera_config.source_type, "udp")
+            self.assertEqual(dialog.camera_config.source_value, "udp://0.0.0.0:6024")
+            self.assertFalse(dialog.camera_config.loop_file)
 
 
 if __name__ == "__main__":
