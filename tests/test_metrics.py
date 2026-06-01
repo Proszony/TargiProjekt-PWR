@@ -39,6 +39,34 @@ class MetricsTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.zone_metrics["booth-a"].avg_dwell_s, 1.4, places=2)
         self.assertAlmostEqual(snapshot.zone_metrics["booth-a"].median_dwell_s, 1.4, places=2)
 
+    def test_dwell_median_updates_incrementally_across_visits(self) -> None:
+        engine = AnalyticsEngine(self.venue, zone_entry_min_duration_s=0.0, zone_exit_grace_s=0.0)
+
+        def complete_visit(track_id: str, start_ts: float, open_ts: float, end_ts: float):
+            track = AnalyticsTrack(
+                analytics_track_id=track_id,
+                active=True,
+                ground_anchor_world=(1.0, 1.0),
+                source_camera_ids=["camera-1"],
+            )
+            engine.update(start_ts, {track_id: track})
+            engine.update(open_ts, {track_id: track})
+            track.active = False
+            return engine.update(end_ts, {track_id: track})
+
+        complete_visit("A000001", 0.0, 0.1, 1.1)
+        complete_visit("A000002", 2.0, 2.1, 5.1)
+        snapshot = complete_visit("A000003", 6.0, 6.1, 8.1)
+
+        metrics = snapshot.zone_metrics["booth-a"]
+        self.assertEqual(metrics.unique_visits, 3)
+        self.assertAlmostEqual(metrics.total_dwell_s, 6.0, places=2)
+        self.assertAlmostEqual(metrics.avg_dwell_s, 2.0, places=2)
+        self.assertAlmostEqual(metrics.median_dwell_s, 2.0, places=2)
+
+        snapshot = complete_visit("A000004", 9.0, 9.1, 13.1)
+        self.assertAlmostEqual(snapshot.zone_metrics["booth-a"].median_dwell_s, 2.5, places=2)
+
     def test_peak_occupancy_tracks_multiple_people(self) -> None:
         track_a = AnalyticsTrack(
             analytics_track_id="A000001",

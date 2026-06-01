@@ -8,7 +8,11 @@ from typing import Any
 from core.models import (
     CameraConfig,
     CameraTrackingPacket,
+    DistributedRuntimeConfig,
     LocalTrack,
+    PlaybackSyncConfig,
+    ProjectConfig,
+    VenueMapConfig,
 )
 
 
@@ -20,6 +24,28 @@ def camera_config_sha256(camera_config: CameraConfig) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def worker_config_to_network_dict(project_config: ProjectConfig, camera_config: CameraConfig) -> dict[str, Any]:
+    camera_snapshot = CameraConfig.from_dict(camera_config.to_dict())
+    return {
+        "camera_id": camera_snapshot.camera_id,
+        "camera_config": camera_snapshot.to_dict(),
+        "venue_map": project_config.venue_map.to_dict(),
+        "playback_sync": project_config.playback_sync.to_dict(),
+        "distributed_runtime": project_config.distributed_runtime.to_dict(),
+        "config_hash": camera_config_sha256(camera_snapshot),
+    }
+
+
+def worker_config_from_network_dict(
+    data: dict[str, Any],
+) -> tuple[CameraConfig, VenueMapConfig, PlaybackSyncConfig, DistributedRuntimeConfig, str]:
+    camera_config = CameraConfig.from_dict(data.get("camera_config", {}))
+    venue_map = VenueMapConfig.from_dict(data.get("venue_map", {}))
+    playback_sync = PlaybackSyncConfig.from_dict(data.get("playback_sync", {}))
+    distributed_runtime = DistributedRuntimeConfig.from_dict(data.get("distributed_runtime", {}))
+    return camera_config, venue_map, playback_sync, distributed_runtime, str(data.get("config_hash", ""))
 
 
 def camera_tracking_packet_to_network_dict(packet: CameraTrackingPacket) -> dict[str, Any]:

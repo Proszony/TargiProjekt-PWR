@@ -330,6 +330,11 @@ class IdentityConfig:
 class AnalyticsConfig:
     zone_entry_min_duration_s: float = rd.DEFAULT_ZONE_ENTRY_MIN_DURATION_S
     zone_exit_grace_s: float = rd.DEFAULT_ZONE_EXIT_GRACE_S
+    heatmap_enabled: bool = rd.DEFAULT_HEATMAP_ENABLED
+    heatmap_sample_interval_s: float = rd.DEFAULT_HEATMAP_SAMPLE_INTERVAL_S
+    heatmap_grid_columns: int = rd.DEFAULT_HEATMAP_GRID_COLUMNS
+    heatmap_min_rows: int = rd.DEFAULT_HEATMAP_MIN_ROWS
+    heatmap_max_rows: int = rd.DEFAULT_HEATMAP_MAX_ROWS
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AnalyticsConfig":
@@ -338,12 +343,24 @@ class AnalyticsConfig:
                 data.get("zone_entry_min_duration_s", rd.DEFAULT_ZONE_ENTRY_MIN_DURATION_S)
             ),
             zone_exit_grace_s=float(data.get("zone_exit_grace_s", rd.DEFAULT_ZONE_EXIT_GRACE_S)),
+            heatmap_enabled=bool(data.get("heatmap_enabled", rd.DEFAULT_HEATMAP_ENABLED)),
+            heatmap_sample_interval_s=float(
+                data.get("heatmap_sample_interval_s", rd.DEFAULT_HEATMAP_SAMPLE_INTERVAL_S)
+            ),
+            heatmap_grid_columns=int(data.get("heatmap_grid_columns", rd.DEFAULT_HEATMAP_GRID_COLUMNS)),
+            heatmap_min_rows=int(data.get("heatmap_min_rows", rd.DEFAULT_HEATMAP_MIN_ROWS)),
+            heatmap_max_rows=int(data.get("heatmap_max_rows", rd.DEFAULT_HEATMAP_MAX_ROWS)),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "zone_entry_min_duration_s": self.zone_entry_min_duration_s,
             "zone_exit_grace_s": self.zone_exit_grace_s,
+            "heatmap_enabled": self.heatmap_enabled,
+            "heatmap_sample_interval_s": self.heatmap_sample_interval_s,
+            "heatmap_grid_columns": self.heatmap_grid_columns,
+            "heatmap_min_rows": self.heatmap_min_rows,
+            "heatmap_max_rows": self.heatmap_max_rows,
         }
 
 

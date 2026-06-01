@@ -7,18 +7,24 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
 from core import runtime_defaults as rd
+from core.calibration import compute_world_viewport
 from core.camera_overlap import build_camera_overlap_graph
 from core.distributed_server import DistributedRuntimeServer
+from core.heatmap import HeatmapAccumulator
 from core.media_sync import MultiCameraMediaSynchronizer
 from core.metrics import AnalyticsEngine
 from core.models import (
     AnalyticsSnapshot,
     CameraConfig,
+    CameraOverlapGraph,
     CameraTrackingPacket,
+    HeatmapSnapshot,
     MapPresence,
     MultiCameraRuntimeSnapshot,
+    Point,
     ProjectConfig,
     SynchronizedCameraFrameSet,
+    WorldViewport,
 )
 from core.statistics_service import StatisticsService
 from core.streaming import CameraPipelineWorker
@@ -49,12 +55,25 @@ class MultiCameraPipelineManager(QObject):
         self._packets: dict[str, CameraTrackingPacket] = {}
         self._frame_images: dict[str, dict[int, object]] = {}
         self._latest_remote_preview_images: dict[str, QImage] = {}
+        self._latest_remote_preview_frame_indices: dict[str, int] = {}
         self._latest_remote_labels_by_camera: dict[str, list[tuple[tuple[int, int, int, int], str]]] = {}
+        self._labeled_remote_preview_cache: dict[
+            str,
+            tuple[int, tuple[tuple[tuple[int, int, int, int], str], ...], QImage],
+        ] = {}
         self._analytics = AnalyticsEngine(
             venue_map=project_config.venue_map,
             zone_entry_min_duration_s=project_config.analytics.zone_entry_min_duration_s,
             zone_exit_grace_s=project_config.analytics.zone_exit_grace_s,
         )
+        self._heatmap = HeatmapAccumulator(
+            enabled=project_config.analytics.heatmap_enabled,
+            sample_interval_s=project_config.analytics.heatmap_sample_interval_s,
+            grid_columns=project_config.analytics.heatmap_grid_columns,
+            min_rows=project_config.analytics.heatmap_min_rows,
+            max_rows=project_config.analytics.heatmap_max_rows,
+        )
+        self._last_heatmap_snapshot: HeatmapSnapshot | None = None
         self._last_snapshot_persisted_at = 0.0
         self._running = False
         self._sync_timer = QTimer(self)
@@ -64,19 +83,27 @@ class MultiCameraPipelineManager(QObject):
         self._session_started_at_unix_s: float | None = None
         self._file_playback_started_wall_time: float | None = None
         self._remote_server: DistributedRuntimeServer | None = None
+        self._overlap_graph_cache_key: tuple[object, ...] | None = None
+        self._overlap_graph_cache: CameraOverlapGraph | None = None
+        self._heatmap_viewport_cache_key: tuple[object, ...] | None = None
+        self._heatmap_viewport_cache: WorldViewport | None = None
 
     def update_project_config(self, project_config: ProjectConfig) -> None:
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
+        self._invalidate_geometry_cache()
         self._analytics.venue_map = self.project_config.venue_map
         self._analytics.zone_entry_min_duration_s = self.project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = self.project_config.analytics.zone_exit_grace_s
+        self._configure_heatmap()
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
         stale_camera_ids = set(self._packets) - set(camera_lookup)
         for camera_id in stale_camera_ids:
             self._packets.pop(camera_id, None)
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_preview_frame_indices.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._labeled_remote_preview_cache.pop(camera_id, None)
         active_local_camera_ids = {
             camera.camera_id
             for camera in self.project_config.cameras
@@ -95,7 +122,9 @@ class MultiCameraPipelineManager(QObject):
             self._packets.pop(camera_id, None)
             self._frame_images.pop(camera_id, None)
             self._latest_remote_preview_images.pop(camera_id, None)
+            self._latest_remote_preview_frame_indices.pop(camera_id, None)
             self._latest_remote_labels_by_camera.pop(camera_id, None)
+            self._labeled_remote_preview_cache.pop(camera_id, None)
         for camera_id, worker in self._workers.items():
             camera = camera_lookup.get(camera_id)
             if camera is None:
@@ -142,10 +171,15 @@ class MultiCameraPipelineManager(QObject):
         self._running = True
         self._packets.clear()
         self._analytics.reset()
+        self._configure_heatmap()
+        self._heatmap.reset(self._cached_heatmap_viewport())
+        self._last_heatmap_snapshot = self._heatmap.snapshot(0.0)
         self._last_snapshot_persisted_at = 0.0
         self._frame_images.clear()
         self._latest_remote_preview_images.clear()
+        self._latest_remote_preview_frame_indices.clear()
         self._latest_remote_labels_by_camera.clear()
+        self._labeled_remote_preview_cache.clear()
         self._session_started_at_unix_s = time.time()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
@@ -220,9 +254,11 @@ class MultiCameraPipelineManager(QObject):
 
     def update_project(self, project_config: ProjectConfig) -> None:
         self.project_config = project_config
+        self._invalidate_geometry_cache()
         self._analytics.venue_map = project_config.venue_map
         self._analytics.zone_entry_min_duration_s = project_config.analytics.zone_entry_min_duration_s
         self._analytics.zone_exit_grace_s = project_config.analytics.zone_exit_grace_s
+        self._configure_heatmap()
         for camera in project_config.cameras:
             worker = self._workers.get(camera.camera_id)
             if worker is not None:
@@ -313,8 +349,8 @@ class MultiCameraPipelineManager(QObject):
         if image.isNull():
             return
         self._latest_remote_preview_images[camera_id] = image
-        labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
-        self.camera_frame_ready.emit(camera_id, labeled)
+        self._latest_remote_preview_frame_indices[camera_id] = frame_index
+        self._emit_labeled_remote_preview_if_changed(camera_id)
 
     @Slot(str, str)
     def _handle_remote_camera_status(self, camera_id: str, status_text: str) -> None:
@@ -378,9 +414,16 @@ class MultiCameraPipelineManager(QObject):
                 else None
             )
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
-        overlap_graph = build_camera_overlap_graph(self.project_config.cameras, self.project_config.overlap_dedup)
+        overlap_graph = self._cached_overlap_graph()
         map_presences = self._build_local_map_presences(camera_packets)
         analytics_snapshot = self._analytics.update(timestamp, map_presences)
+        heatmap_snapshot = self._heatmap.update(
+            timestamp,
+            analytics_snapshot.active_map_presences,
+            self._cached_heatmap_viewport(),
+        )
+        analytics_snapshot.heatmap_snapshot = heatmap_snapshot
+        self._last_heatmap_snapshot = heatmap_snapshot
         labels_by_camera = self._build_operator_labels(camera_packets)
         camera_lookup = {camera.camera_id: camera for camera in self.project_config.cameras}
         self._latest_remote_labels_by_camera = {
@@ -388,9 +431,8 @@ class MultiCameraPipelineManager(QObject):
             for camera_id, camera in camera_lookup.items()
             if camera.runtime_mode == "remote"
         }
-        for camera_id, image in self._latest_remote_preview_images.items():
-            labeled = self._draw_operator_labels(image, self._latest_remote_labels_by_camera.get(camera_id, []))
-            self.camera_frame_ready.emit(camera_id, labeled)
+        for camera_id in self._latest_remote_preview_images:
+            self._emit_labeled_remote_preview_if_changed(camera_id)
         runtime_snapshot = MultiCameraRuntimeSnapshot(
             timestamp=timestamp,
             analytics_snapshot=analytics_snapshot,
@@ -500,6 +542,36 @@ class MultiCameraPipelineManager(QObject):
                 )
         return labels_by_camera
 
+    def _emit_labeled_remote_preview_if_changed(self, camera_id: str) -> None:
+        image = self._latest_remote_preview_images.get(camera_id)
+        frame_index = self._latest_remote_preview_frame_indices.get(camera_id)
+        if image is None or frame_index is None:
+            return
+        labels_signature = self._operator_labels_signature(
+            self._latest_remote_labels_by_camera.get(camera_id, [])
+        )
+        cached = self._labeled_remote_preview_cache.get(camera_id)
+        if (
+            cached is not None
+            and cached[0] == frame_index
+            and cached[1] == labels_signature
+        ):
+            return
+        labeled = self._draw_operator_labels(image, list(labels_signature))
+        self._labeled_remote_preview_cache[camera_id] = (frame_index, labels_signature, labeled)
+        self.camera_frame_ready.emit(camera_id, labeled)
+
+    @staticmethod
+    def _operator_labels_signature(
+        labels: list[tuple[tuple[int, int, int, int], str]],
+    ) -> tuple[tuple[tuple[int, int, int, int], str], ...]:
+        normalized = [
+            ((int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])), str(label))
+            for bbox, label in labels
+            if label
+        ]
+        return tuple(sorted(normalized, key=lambda item: (item[1], item[0])))
+
     @staticmethod
     def _draw_operator_labels(
         image: QImage,
@@ -550,7 +622,9 @@ class MultiCameraPipelineManager(QObject):
         self._packets.pop(camera_id, None)
         self._frame_images.pop(camera_id, None)
         self._latest_remote_preview_images.pop(camera_id, None)
+        self._latest_remote_preview_frame_indices.pop(camera_id, None)
         self._latest_remote_labels_by_camera.pop(camera_id, None)
+        self._labeled_remote_preview_cache.pop(camera_id, None)
         if self._running and self._workers:
             return
         self._finish_stop_if_possible()
@@ -578,5 +652,142 @@ class MultiCameraPipelineManager(QObject):
             return
         if self._threads:
             return
-        self.statistics_service.finish_session(time.time())
+        self.statistics_service.finish_session_with_heatmap(time.time(), self._last_heatmap_snapshot)
         self.stopped.emit()
+
+    def _configure_heatmap(self) -> None:
+        analytics = self.project_config.analytics
+        self._heatmap.configure(
+            enabled=analytics.heatmap_enabled,
+            sample_interval_s=analytics.heatmap_sample_interval_s,
+            grid_columns=analytics.heatmap_grid_columns,
+            min_rows=analytics.heatmap_min_rows,
+            max_rows=analytics.heatmap_max_rows,
+        )
+
+    def _invalidate_geometry_cache(self) -> None:
+        self._overlap_graph_cache_key = None
+        self._overlap_graph_cache = None
+        self._heatmap_viewport_cache_key = None
+        self._heatmap_viewport_cache = None
+
+    def _cached_overlap_graph(self) -> CameraOverlapGraph:
+        cache_key = self._overlap_graph_key()
+        if self._overlap_graph_cache is None or self._overlap_graph_cache_key != cache_key:
+            self._overlap_graph_cache = build_camera_overlap_graph(
+                self.project_config.cameras,
+                self.project_config.overlap_dedup,
+            )
+            self._overlap_graph_cache_key = cache_key
+        return self._overlap_graph_cache
+
+    def _cached_heatmap_viewport(self) -> WorldViewport:
+        cache_key = self._heatmap_viewport_key()
+        if self._heatmap_viewport_cache is None or self._heatmap_viewport_cache_key != cache_key:
+            self._heatmap_viewport_cache = self._build_heatmap_viewport()
+            self._heatmap_viewport_cache_key = cache_key
+        return self._heatmap_viewport_cache
+
+    def _build_heatmap_viewport(self) -> WorldViewport:
+        zone_polygons = [
+            zone.polygon_world
+            for zone in self.project_config.venue_map.zones
+            if len(zone.polygon_world) >= 3
+        ]
+        if zone_polygons or self.project_config.venue_map.manual_viewport_override is not None:
+            return compute_world_viewport(
+                [],
+                self.project_config.venue_map.zones,
+                padding_ratio=0.12,
+                manual_override=self.project_config.venue_map.manual_viewport_override,
+            )
+        anchor_points = [anchor.world_point for anchor in self.project_config.shared_anchors]
+        if anchor_points:
+            return self._viewport_from_points(anchor_points)
+        return compute_world_viewport(
+            self.project_config.cameras,
+            self.project_config.venue_map.zones,
+            manual_override=self.project_config.venue_map.manual_viewport_override,
+        )
+
+    @staticmethod
+    def _viewport_from_points(points: list[Point]) -> WorldViewport:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+        pad_x = span_x * 0.12
+        pad_y = span_y * 0.12
+        return WorldViewport(
+            min_x=min_x - pad_x,
+            min_y=min_y - pad_y,
+            max_x=max_x + pad_x,
+            max_y=max_y + pad_y,
+        )
+
+    def _overlap_graph_key(self) -> tuple[object, ...]:
+        overlap = self.project_config.overlap_dedup
+        return (
+            tuple(
+                (
+                    camera.camera_id,
+                    camera.calibration_valid,
+                    self._point_tuple(camera.coverage_polygon_world),
+                    tuple(camera.overlap_camera_ids),
+                )
+                for camera in sorted(self.project_config.cameras, key=lambda item: item.camera_id)
+            ),
+            overlap.enabled,
+            overlap.overlap_area_min_m2,
+            overlap.boundary_gap_m,
+        )
+
+    def _heatmap_viewport_key(self) -> tuple[object, ...]:
+        return (
+            self._viewport_tuple(self.project_config.venue_map.manual_viewport_override),
+            tuple(
+                (
+                    zone.zone_id,
+                    self._point_tuple(zone.polygon_world),
+                )
+                for zone in self.project_config.venue_map.zones
+            ),
+            tuple(
+                (
+                    anchor.anchor_id,
+                    self._point(anchor.world_point),
+                )
+                for anchor in self.project_config.shared_anchors
+            ),
+            tuple(
+                (
+                    camera.camera_id,
+                    camera.calibration_valid,
+                    self._point_tuple(camera.coverage_polygon_world),
+                )
+                for camera in sorted(self.project_config.cameras, key=lambda item: item.camera_id)
+            ),
+        )
+
+    @staticmethod
+    def _point_tuple(points: list[Point] | None) -> tuple[tuple[float, float], ...]:
+        return tuple(MultiCameraPipelineManager._point(point) for point in points or [])
+
+    @staticmethod
+    def _point(point: Point) -> tuple[float, float]:
+        return (round(point[0], 6), round(point[1], 6))
+
+    @staticmethod
+    def _viewport_tuple(viewport: WorldViewport | None) -> tuple[float, float, float, float] | None:
+        if viewport is None:
+            return None
+        return (
+            round(viewport.min_x, 6),
+            round(viewport.min_y, 6),
+            round(viewport.max_x, 6),
+            round(viewport.max_y, 6),
+        )

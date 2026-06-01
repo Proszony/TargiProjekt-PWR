@@ -22,32 +22,17 @@ class CameraGridLayoutTests(unittest.TestCase):
         super().setUpClass()
         cls._app = QApplication.instance() or QApplication([])
 
-    def test_grid_columns_for_one_camera(self) -> None:
-        self.assertEqual(CameraGridView._grid_columns_for_count(1), 1)
-
-    def test_grid_columns_for_two_cameras(self) -> None:
-        self.assertEqual(CameraGridView._grid_columns_for_count(2), 1)
-
-    def test_grid_columns_for_three_cameras(self) -> None:
-        self.assertEqual(CameraGridView._grid_columns_for_count(3), 2)
-
-    def test_grid_columns_for_four_cameras(self) -> None:
-        self.assertEqual(CameraGridView._grid_columns_for_count(4), 2)
-
-    def test_single_camera_panel_expands_without_empty_grid_rows(self) -> None:
+    def test_single_camera_stage_expands_and_is_selected(self) -> None:
         grid = CameraGridView()
         grid.set_cameras([CameraConfig(camera_id="camera-1", enabled=True)])
 
-        self.assertEqual(len(grid._panels), 1)
-        panel = grid._panels["camera-1"]
-        self.assertEqual(panel.sizePolicy().horizontalPolicy(), QSizePolicy.Expanding)
-        self.assertEqual(panel.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
-        self.assertEqual(panel.image_label.sizePolicy().horizontalPolicy(), QSizePolicy.Expanding)
-        self.assertEqual(panel.image_label.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
-        self.assertEqual(grid.layout().rowStretch(0), 1)
-        self.assertEqual(grid.layout().columnStretch(0), 1)
+        self.assertEqual(grid.selected_camera_id(), "camera-1")
+        self.assertEqual(grid.stage.sizePolicy().horizontalPolicy(), QSizePolicy.Expanding)
+        self.assertEqual(grid.stage.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
+        self.assertEqual(grid.stage.image_label.sizePolicy().horizontalPolicy(), QSizePolicy.Expanding)
+        self.assertEqual(grid.stage.image_label.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
 
-    def test_transition_from_two_cameras_to_one_clears_old_row_stretch(self) -> None:
+    def test_transition_from_two_cameras_to_one_selects_remaining_camera(self) -> None:
         grid = CameraGridView()
         grid.set_cameras(
             [
@@ -55,12 +40,11 @@ class CameraGridLayoutTests(unittest.TestCase):
                 CameraConfig(camera_id="camera-2", enabled=True, display_order=1),
             ]
         )
+        grid.set_selected_camera("camera-2")
         grid.set_cameras([CameraConfig(camera_id="camera-1", enabled=True, display_order=0)])
 
-        self.assertEqual(len(grid._panels), 1)
-        self.assertEqual(grid.layout().rowStretch(0), 1)
-        self.assertEqual(grid.layout().rowStretch(1), 0)
-        self.assertEqual(grid.layout().columnStretch(0), 1)
+        self.assertEqual(grid.selected_camera_id(), "camera-1")
+        self.assertEqual(grid.selected_camera_state().camera_id, "camera-1")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from core.distributed_protocol import (
     MESSAGE_START_SESSION,
     MESSAGE_STATUS,
     MESSAGE_STOP_SESSION,
+    MESSAGE_WORKER_CONFIG,
     pack_message,
     unpack_from_buffer,
 )
@@ -25,6 +26,7 @@ from core.distributed_serialization import (
     camera_config_sha256,
     camera_tracking_packet_from_network_dict,
     preview_frame_from_network_dict,
+    worker_config_to_network_dict,
 )
 from core.models import CameraConfig, ProjectConfig
 
@@ -37,7 +39,6 @@ class _WorkerConnection:
     camera_id: str
     protocol_version: str
     config_hash: str
-    config_mismatch: bool
     lock: threading.Lock = field(default_factory=threading.Lock)
     last_heartbeat_at: float = field(default_factory=time.monotonic)
 
@@ -71,6 +72,10 @@ class DistributedRuntimeServer(QObject):
                     stale_connections.append(connection)
         for connection in stale_connections:
             self._drop_connection(connection, "removed from project")
+        with self._lock:
+            active_connections = list(self._connections_by_camera.values())
+        for connection in active_connections:
+            self._send_worker_config(connection)
 
     def start(self) -> None:
         if self._running:
@@ -243,7 +248,7 @@ class DistributedRuntimeServer(QObject):
             self._close_socket(client_socket)
             return None
         worker_id = str(message.get("worker_id", ""))
-        if camera_config.remote_worker_id and camera_config.remote_worker_id != worker_id:
+        if camera_config.remote_worker_id and worker_id and camera_config.remote_worker_id != worker_id:
             self._send_raw_message(
                 client_socket,
                 {
@@ -270,17 +275,14 @@ class DistributedRuntimeServer(QObject):
             connection = _WorkerConnection(
                 sock=client_socket,
                 address=address,
-                worker_id=worker_id,
+                worker_id=worker_id or camera_config.remote_worker_id or camera_id,
                 camera_id=camera_id,
                 protocol_version=protocol_version,
                 config_hash=config_hash,
-                config_mismatch=(config_hash != camera_config_sha256(camera_config)),
             )
             self._connections_by_camera[camera_id] = connection
-        status = "remote connected"
-        if connection.config_mismatch:
-            status += " | config mismatch"
-        self.camera_status_changed.emit(camera_id, status)
+        self._send_worker_config(connection)
+        self.camera_status_changed.emit(camera_id, "remote connected | config synced")
         if self._session_active:
             self._send_message(
                 connection,
@@ -332,6 +334,20 @@ class DistributedRuntimeServer(QObject):
             if camera.camera_id == camera_id:
                 return camera
         return None
+
+    def _send_worker_config(self, connection: _WorkerConnection) -> None:
+        camera_config = self._camera_config(connection.camera_id)
+        if camera_config is None:
+            self._drop_connection(connection, "removed from project")
+            return
+        connection.config_hash = camera_config_sha256(camera_config)
+        self._send_message(
+            connection,
+            {
+                "type": MESSAGE_WORKER_CONFIG,
+                "payload": worker_config_to_network_dict(self.project_config, camera_config),
+            },
+        )
 
     @staticmethod
     def _close_socket(sock: socket.socket) -> None:

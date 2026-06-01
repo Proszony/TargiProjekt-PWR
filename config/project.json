@@ -83,6 +83,11 @@
   ],
   "analytics": {
     "zone_entry_min_duration_s": 0.35,
-    "zone_exit_grace_s": 0.75
+    "zone_exit_grace_s": 0.75,
+    "heatmap_enabled": true,
+    "heatmap_sample_interval_s": 0.5,
+    "heatmap_grid_columns": 160,
+    "heatmap_min_rows": 40,
+    "heatmap_max_rows": 160
   }
 }

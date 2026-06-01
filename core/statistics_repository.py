@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from core.models import AnalyticsSnapshot, BoothVisitSession, VenueMapConfig
+from core.models import AnalyticsSnapshot, BoothVisitSession, HeatmapCell, HeatmapSnapshot, VenueMapConfig, WorldViewport
 
 
 class StatisticsRepository:
@@ -44,15 +45,27 @@ class StatisticsRepository:
             "median_dwell_s",
             "peak_occupancy",
         },
+        "session_heatmaps": {
+            "session_id",
+            "created_at",
+            "viewport_json",
+            "columns",
+            "rows",
+            "max_dwell_s",
+            "total_dwell_s",
+            "cells_json",
+        },
     }
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
+        self._active_write_connection: sqlite3.Connection | None = None
+        self._active_write_lock = threading.RLock()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection = sqlite3.connect(self.database_path, timeout=5.0, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -64,6 +77,43 @@ class StatisticsRepository:
             connection.commit()
         finally:
             connection.close()
+
+    @contextmanager
+    def _managed_write_connection(self):
+        with self._active_write_lock:
+            if self._active_write_connection is not None:
+                try:
+                    yield self._active_write_connection
+                    self._active_write_connection.commit()
+                except Exception:
+                    self._active_write_connection.rollback()
+                    raise
+                return
+            connection = self._connect()
+            try:
+                yield connection
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+    def begin_active_write_session(self) -> None:
+        with self._active_write_lock:
+            if self._active_write_connection is None:
+                self._active_write_connection = self._connect()
+
+    def end_active_write_session(self) -> None:
+        with self._active_write_lock:
+            connection = self._active_write_connection
+            self._active_write_connection = None
+            if connection is None:
+                return
+            try:
+                connection.commit()
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._managed_connection() as connection:
@@ -109,6 +159,18 @@ class StatisticsRepository:
                     peak_occupancy INTEGER NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS session_heatmaps (
+                    session_id INTEGER PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    viewport_json TEXT NOT NULL,
+                    columns INTEGER NOT NULL,
+                    rows INTEGER NOT NULL,
+                    max_dwell_s REAL NOT NULL,
+                    total_dwell_s REAL NOT NULL,
+                    cells_json TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id)
+                );
                 """
             )
 
@@ -133,7 +195,7 @@ class StatisticsRepository:
         source_label: str,
         camera_id: str,
     ) -> int:
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO sessions (started_at, source_type, source_label, camera_id)
@@ -144,7 +206,7 @@ class StatisticsRepository:
             return int(cursor.lastrowid)
 
     def finish_session(self, session_id: int, ended_at: float) -> None:
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.execute(
                 "UPDATE sessions SET ended_at = ? WHERE id = ?",
                 (ended_at, session_id),
@@ -167,7 +229,7 @@ class StatisticsRepository:
             )
             for visit in sessions
         ]
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO booth_visit_sessions (
@@ -204,7 +266,7 @@ class StatisticsRepository:
             )
         if not rows:
             return
-        with self._managed_connection() as connection:
+        with self._managed_write_connection() as connection:
             connection.executemany(
                 """
                 INSERT INTO zone_snapshots (
@@ -214,6 +276,43 @@ class StatisticsRepository:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
+            )
+
+    def record_session_heatmap(self, session_id: int, heatmap: HeatmapSnapshot) -> None:
+        if heatmap.columns <= 0 or heatmap.rows <= 0:
+            return
+        viewport_json = json.dumps(heatmap.viewport.to_dict(), ensure_ascii=True)
+        cells_json = json.dumps(
+            [
+                {
+                    "x_index": cell.x_index,
+                    "y_index": cell.y_index,
+                    "dwell_s": cell.dwell_s,
+                }
+                for cell in heatmap.cells
+                if cell.dwell_s > 0.0
+            ],
+            ensure_ascii=True,
+        )
+        with self._managed_write_connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO session_heatmaps (
+                    session_id, created_at, viewport_json, columns, rows,
+                    max_dwell_s, total_dwell_s, cells_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    heatmap.timestamp,
+                    viewport_json,
+                    heatmap.columns,
+                    heatmap.rows,
+                    heatmap.max_dwell_s,
+                    heatmap.total_dwell_s,
+                    cells_json,
+                ),
             )
 
     def list_sessions(self) -> list[dict[str, object]]:
@@ -275,3 +374,35 @@ class StatisticsRepository:
                 (session_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def load_session_heatmap(self, session_id: int) -> HeatmapSnapshot | None:
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT created_at, viewport_json, columns, rows, max_dwell_s, total_dwell_s, cells_json
+                FROM session_heatmaps
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        viewport = WorldViewport.from_dict(json.loads(str(row["viewport_json"])))
+        cells_data = json.loads(str(row["cells_json"]))
+        cells = [
+            HeatmapCell(
+                x_index=int(item["x_index"]),
+                y_index=int(item["y_index"]),
+                dwell_s=float(item["dwell_s"]),
+            )
+            for item in cells_data
+        ]
+        return HeatmapSnapshot(
+            timestamp=float(row["created_at"]),
+            viewport=viewport,
+            columns=int(row["columns"]),
+            rows=int(row["rows"]),
+            max_dwell_s=float(row["max_dwell_s"]),
+            total_dwell_s=float(row["total_dwell_s"]),
+            cells=cells,
+        )

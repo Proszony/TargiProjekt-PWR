@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field
-from statistics import median
 
 from core.models import (
     AnalyticsEvent,
@@ -25,6 +25,36 @@ class _TrackAnalyticsState:
     active_visit_id: str | None = None
 
 
+@dataclass(slots=True)
+class _ZoneDwellStats:
+    count: int = 0
+    total_dwell_s: float = 0.0
+    lower_dwell_heap: list[float] = field(default_factory=list)
+    upper_dwell_heap: list[float] = field(default_factory=list)
+
+    def add(self, dwell_s: float) -> None:
+        self.count += 1
+        self.total_dwell_s += dwell_s
+        if not self.lower_dwell_heap or dwell_s <= -self.lower_dwell_heap[0]:
+            heapq.heappush(self.lower_dwell_heap, -dwell_s)
+        else:
+            heapq.heappush(self.upper_dwell_heap, dwell_s)
+        self._rebalance()
+
+    def median(self) -> float:
+        if self.count == 0:
+            return 0.0
+        if len(self.lower_dwell_heap) == len(self.upper_dwell_heap):
+            return (-self.lower_dwell_heap[0] + self.upper_dwell_heap[0]) / 2.0
+        return -self.lower_dwell_heap[0]
+
+    def _rebalance(self) -> None:
+        if len(self.lower_dwell_heap) > len(self.upper_dwell_heap) + 1:
+            heapq.heappush(self.upper_dwell_heap, -heapq.heappop(self.lower_dwell_heap))
+        elif len(self.upper_dwell_heap) > len(self.lower_dwell_heap):
+            heapq.heappush(self.lower_dwell_heap, -heapq.heappop(self.upper_dwell_heap))
+
+
 class AnalyticsEngine:
     def __init__(
         self,
@@ -37,13 +67,13 @@ class AnalyticsEngine:
         self.zone_exit_grace_s = zone_exit_grace_s
         self._states: dict[str, _TrackAnalyticsState] = {}
         self._next_visit_id = 1
-        self._finalized_sessions: list[BoothVisitSession] = []
+        self._finalized_dwell_stats_by_zone: dict[str, _ZoneDwellStats] = {}
         self._peak_occupancy_by_zone: dict[str, int] = {}
 
     def reset(self) -> None:
         self._states.clear()
         self._next_visit_id = 1
-        self._finalized_sessions.clear()
+        self._finalized_dwell_stats_by_zone.clear()
         self._peak_occupancy_by_zone.clear()
 
     def update(
@@ -141,7 +171,8 @@ class AnalyticsEngine:
                     )
                 )
 
-        self._finalized_sessions.extend(finalized_recent)
+        for session in finalized_recent:
+            self._record_finalized_session(session)
         return self._build_snapshot(timestamp, active_presences, recent_events, finalized_recent)
 
     def _open_visit(
@@ -194,6 +225,10 @@ class AnalyticsEngine:
         state.candidate_zone_since = None
         return session
 
+    def _record_finalized_session(self, session: BoothVisitSession) -> None:
+        stats = self._finalized_dwell_stats_by_zone.setdefault(session.zone_id, _ZoneDwellStats())
+        stats.add(session.dwell_s)
+
     def _build_snapshot(
         self,
         timestamp: float,
@@ -215,7 +250,6 @@ class AnalyticsEngine:
         avg_dwell_times: dict[str, float] = {}
         median_dwell_times: dict[str, float] = {}
         peak_occupancy_by_zone = dict(self._peak_occupancy_by_zone)
-        dwell_values_by_zone: dict[str, list[float]] = {}
 
         for state in self._states.values():
             if state.active_zone_id is None:
@@ -226,10 +260,9 @@ class AnalyticsEngine:
             peak_occupancy_by_zone[zone_id] = max(peak_occupancy_by_zone.get(zone_id, 0), occupancy)
         self._peak_occupancy_by_zone = peak_occupancy_by_zone
 
-        for session in self._finalized_sessions:
-            unique_zone_entries[session.zone_id] = unique_zone_entries.get(session.zone_id, 0) + 1
-            dwell_times[session.zone_id] = dwell_times.get(session.zone_id, 0.0) + session.dwell_s
-            dwell_values_by_zone.setdefault(session.zone_id, []).append(session.dwell_s)
+        for zone_id, stats in self._finalized_dwell_stats_by_zone.items():
+            unique_zone_entries[zone_id] = stats.count
+            dwell_times[zone_id] = stats.total_dwell_s
 
         for track_id, state in self._states.items():
             if state.active_zone_id is None or state.zone_entered_at is None:
@@ -245,9 +278,7 @@ class AnalyticsEngine:
             metrics.total_dwell_s = dwell_times.get(zone_id, 0.0)
             if metrics.unique_visits > 0:
                 metrics.avg_dwell_s = metrics.total_dwell_s / metrics.unique_visits
-                values = dwell_values_by_zone.get(zone_id, [])
-                if values:
-                    metrics.median_dwell_s = float(median(values))
+                metrics.median_dwell_s = self._finalized_dwell_stats_by_zone[zone_id].median()
             metrics.peak_occupancy = peak_occupancy_by_zone.get(zone_id, metrics.current_occupancy)
             if timestamp > 0.0:
                 metrics.booth_utilization_ratio = min(metrics.total_dwell_s / max(timestamp, 1e-6), 1.0)

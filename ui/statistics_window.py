@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import csv
 import json
-import sqlite3
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -30,9 +32,131 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.models import AnalyticsSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig
+from core.models import AnalyticsSnapshot, HeatmapSnapshot, MultiCameraRuntimeSnapshot, VenueMapConfig, WorldViewport
 from core.statistics_repository import StatisticsRepository
+from core.zones import zone_color
+from ui.heatmap_rendering import draw_heatmap_cells
 from ui.style_system import COLORS, apply_chrome
+
+
+@dataclass(frozen=True, slots=True)
+class _HistorySessionPayload:
+    session_id: int
+    summary: dict[str, object] | None
+    metrics: list[dict[str, object]]
+    visits: list[dict[str, object]]
+    heatmap: HeatmapSnapshot | None
+    heatmap_preview: QImage | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TimelinePayload:
+    session_id: int
+    zone_id: str
+    timeline: list[dict[str, object]]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExportPayload:
+    title: str
+    message: str
+
+
+class _TaskSignals(QObject):
+    finished = Signal(int, object)
+    failed = Signal(int, str)
+
+
+class _BackgroundTask(QRunnable):
+    def __init__(self, token: int, fn: Callable[[], object]) -> None:
+        super().__init__()
+        self.token = token
+        self.fn = fn
+        self.signals = _TaskSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.fn()
+        except Exception as exc:
+            self.signals.failed.emit(self.token, str(exc))
+            return
+        self.signals.finished.emit(self.token, result)
+
+
+def _clone_venue_map(venue_map: VenueMapConfig) -> VenueMapConfig:
+    return VenueMapConfig.from_dict(venue_map.to_dict())
+
+
+def _render_heatmap_image(
+    heatmap: HeatmapSnapshot,
+    width: int,
+    height: int,
+    venue_map: VenueMapConfig,
+) -> QImage:
+    image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+    image.fill(QColor(COLORS["bg-canvas"]))
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    content_rect = QRectF(18.0, 18.0, width - 36.0, height - 36.0)
+    background = QLinearGradient(content_rect.left(), content_rect.top(), content_rect.right(), content_rect.bottom())
+    background.setColorAt(0.0, QColor("#15222f"))
+    background.setColorAt(1.0, QColor("#0b1620"))
+    painter.fillRect(content_rect, background)
+
+    map_image = QImage(venue_map.map_image_path) if venue_map.map_image_path else QImage()
+    if not map_image.isNull():
+        painter.drawImage(content_rect, map_image)
+
+    def world_to_image(point: tuple[float, float], viewport: WorldViewport = heatmap.viewport) -> QPointF:
+        viewport_width = max(viewport.max_x - viewport.min_x, 1e-6)
+        viewport_height = max(viewport.max_y - viewport.min_y, 1e-6)
+        x = content_rect.left() + ((point[0] - viewport.min_x) / viewport_width) * content_rect.width()
+        y = content_rect.top() + ((point[1] - viewport.min_y) / viewport_height) * content_rect.height()
+        return QPointF(x, y)
+
+    viewport_width = max(heatmap.viewport.max_x - heatmap.viewport.min_x, 1e-6)
+    viewport_height = max(heatmap.viewport.max_y - heatmap.viewport.min_y, 1e-6)
+
+    def cell_rect(x_index: int, y_index: int) -> QRectF:
+        world_left = heatmap.viewport.min_x + (x_index / heatmap.columns) * viewport_width
+        world_right = heatmap.viewport.min_x + ((x_index + 1) / heatmap.columns) * viewport_width
+        world_top = heatmap.viewport.min_y + (y_index / heatmap.rows) * viewport_height
+        world_bottom = heatmap.viewport.min_y + ((y_index + 1) / heatmap.rows) * viewport_height
+        return QRectF(world_to_image((world_left, world_top)), world_to_image((world_right, world_bottom))).normalized()
+
+    draw_heatmap_cells(painter, heatmap, cell_rect)
+    _draw_heatmap_zones(painter, world_to_image, venue_map)
+    painter.end()
+    return image
+
+
+def _write_heatmap_png(path: Path, heatmap: HeatmapSnapshot, venue_map: VenueMapConfig) -> None:
+    image = _render_heatmap_image(heatmap, 1280, 900, venue_map)
+    image.save(str(path), "PNG")
+
+
+def _draw_heatmap_zones(
+    painter: QPainter,
+    world_to_image: Callable[[tuple[float, float]], QPointF],
+    venue_map: VenueMapConfig,
+) -> None:
+    for zone in venue_map.zones:
+        if len(zone.polygon_world) < 3:
+            continue
+        path = QPainterPath()
+        path.moveTo(world_to_image(zone.polygon_world[0]))
+        for point in zone.polygon_world[1:]:
+            path.lineTo(world_to_image(point))
+        path.closeSubpath()
+        color = QColor(zone_color(zone.kind))
+        color.setAlpha(86)
+        painter.fillPath(path, color)
+        pen = QPen(QColor(zone_color(zone.kind)), 2)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.setPen(QColor(COLORS["text-primary"]))
+        painter.drawText(world_to_image(zone.polygon_world[0]) + QPointF(8, -8), zone.name)
 
 
 class RankedMetricList(QWidget):
@@ -119,6 +243,16 @@ class StatisticsWindow(QMainWindow):
         self.runtime_snapshot = MultiCameraRuntimeSnapshot(timestamp=0.0)
         self.live_venue_map = VenueMapConfig()
         self._last_live_timeline_refresh_at = 0.0
+        self._thread_pool = QThreadPool.globalInstance()
+        self._history_sessions: list[dict[str, object]] = []
+        self._history_loaded_session_id: int | None = None
+        self._history_loaded_metrics: list[dict[str, object]] = []
+        self._history_loaded_visits: list[dict[str, object]] = []
+        self._history_selected_heatmap: HeatmapSnapshot | None = None
+        self._history_reload_token = 0
+        self._history_session_token = 0
+        self._history_timeline_token = 0
+        self._history_export_token = 0
         self.setWindowTitle("Booth Analytics Dashboard")
         self.resize(1360, 920)
         self._build_ui()
@@ -313,6 +447,13 @@ class StatisticsWindow(QMainWindow):
         timeline_header.addStretch(1)
 
         self.history_timeline_chart = self._create_chart_view("Selected session occupancy timeline")
+        self.history_heatmap_preview = QLabel("No heatmap recorded")
+        self.history_heatmap_preview.setObjectName("HeatmapPreview")
+        self.history_heatmap_preview.setAlignment(Qt.AlignCenter)
+        self.history_heatmap_preview.setMinimumSize(320, 220)
+        self.history_heatmap_preview.setScaledContents(False)
+        self.history_heatmap_export_button = QPushButton("Export heatmap PNG")
+        self.history_heatmap_export_button.setEnabled(False)
 
         history_main_row = QHBoxLayout()
         history_main_row.setSpacing(12)
@@ -321,8 +462,12 @@ class StatisticsWindow(QMainWindow):
         history_timeline_panel = self._create_panel("Session timeline", "Selected booth occupancy across the session")
         history_timeline_panel.layout().addLayout(timeline_header)  # type: ignore[union-attr]
         history_timeline_panel.layout().addWidget(self.history_timeline_chart, 1)  # type: ignore[union-attr]
+        history_heatmap_panel = self._create_panel("Session heatmap", "Where tracked presences spent the most time")
+        history_heatmap_panel.layout().addWidget(self.history_heatmap_preview, 1)  # type: ignore[union-attr]
+        history_heatmap_panel.layout().addWidget(self.history_heatmap_export_button)  # type: ignore[union-attr]
         history_main_row.addWidget(history_table_panel, 7)
         history_main_row.addWidget(history_timeline_panel, 6)
+        history_main_row.addWidget(history_heatmap_panel, 5)
 
         layout.addLayout(top_row)
         layout.addWidget(self.history_summary_label)
@@ -333,6 +478,7 @@ class StatisticsWindow(QMainWindow):
         self.refresh_history_button.clicked.connect(self.reload_history)
         self.history_export_button.clicked.connect(self._export_history_csv)
         self.history_bundle_export_button.clicked.connect(self._export_current_session_bundle)
+        self.history_heatmap_export_button.clicked.connect(self._export_history_heatmap_png)
         self.session_selector.currentIndexChanged.connect(self._load_selected_session)
         self.history_timeline_zone_combo.currentTextChanged.connect(self._refresh_history_timeline)
 
@@ -481,44 +627,136 @@ class StatisticsWindow(QMainWindow):
             f"Map presences: {snapshot.active_map_presence_count}"
         )
 
+    def _run_background(
+        self,
+        token: int,
+        fn: Callable[[], object],
+        on_finished: Callable[[int, Any], None],
+        on_failed: Callable[[int, str], None],
+    ) -> None:
+        task = _BackgroundTask(token, fn)
+        task.signals.finished.connect(on_finished)
+        task.signals.failed.connect(on_failed)
+        self._thread_pool.start(task)
+
     def reload_history(self) -> None:
-        try:
-            sessions = self.repository.list_sessions()
-        except sqlite3.Error as exc:
-            self.history_summary_label.setText(f"Statistics unavailable: {exc}")
+        self._history_reload_token += 1
+        token = self._history_reload_token
+        self.refresh_history_button.setEnabled(False)
+        self.history_summary_label.setText("Loading recorded sessions...")
+        self._run_background(
+            token,
+            self.repository.list_sessions,
+            self._apply_history_sessions,
+            self._handle_history_reload_error,
+        )
+
+    def _apply_history_sessions(self, token: int, payload: object) -> None:
+        if token != self._history_reload_token:
             return
+        self.refresh_history_button.setEnabled(True)
+        sessions = list(payload) if isinstance(payload, list) else []
+        self._history_sessions = sessions
+        current_session_id = self.session_selector.currentData()
         self.session_selector.blockSignals(True)
         self.session_selector.clear()
         for session in sessions:
             started_at = datetime.fromtimestamp(float(session["started_at"])).strftime("%Y-%m-%d %H:%M:%S")
             label = f"#{session['id']} | {started_at} | {session['camera_id']} | {session['source_label']}"
             self.session_selector.addItem(label, int(session["id"]))
+        if isinstance(current_session_id, int):
+            index = self.session_selector.findData(current_session_id)
+            if index >= 0:
+                self.session_selector.setCurrentIndex(index)
         self.session_selector.blockSignals(False)
         if self.session_selector.count() > 0:
-            self.session_selector.setCurrentIndex(0)
+            if self.session_selector.currentIndex() < 0:
+                self.session_selector.setCurrentIndex(0)
             self._load_selected_session()
         else:
             self.history_summary_label.setText("No recorded sessions")
+            self._history_loaded_session_id = None
+            self._history_loaded_metrics = []
+            self._history_loaded_visits = []
+            self._history_selected_heatmap = None
             self._populate_metrics_table(self.history_table, [])
             self._populate_visit_sessions([])
+            self._set_history_heatmap_preview(None, None, None)
+
+    def _handle_history_reload_error(self, token: int, message: str) -> None:
+        if token != self._history_reload_token:
+            return
+        self.refresh_history_button.setEnabled(True)
+        self.history_summary_label.setText(f"Statistics unavailable: {message}")
 
     def _load_selected_session(self) -> None:
         session_id = self.session_selector.currentData()
         if not isinstance(session_id, int):
             return
-        try:
-            sessions = self.repository.list_sessions()
-        except sqlite3.Error as exc:
-            self.history_summary_label.setText(f"Statistics unavailable: {exc}")
-            return
-        summary = next((item for item in sessions if int(item["id"]) == session_id), None)
+        self._history_session_token += 1
+        token = self._history_session_token
+        summary = next((item for item in self._history_sessions if int(item["id"]) == session_id), None)
+        self._history_loaded_session_id = None
+        self._history_loaded_metrics = []
+        self._history_loaded_visits = []
+        self._populate_metrics_table(self.history_table, [])
+        self._populate_visit_sessions([])
         if summary is not None:
             started_at = datetime.fromtimestamp(float(summary["started_at"])).strftime("%Y-%m-%d %H:%M:%S")
             ended_at = summary["ended_at"]
             ended_text = datetime.fromtimestamp(float(ended_at)).strftime("%Y-%m-%d %H:%M:%S") if ended_at else "running / interrupted"
-            self.history_summary_label.setText(f"Session #{session_id} | start: {started_at} | end: {ended_text}")
+            self.history_summary_label.setText(f"Loading session #{session_id} | start: {started_at} | end: {ended_text}")
+        else:
+            self.history_summary_label.setText(f"Loading session #{session_id}...")
+        self._history_selected_heatmap = None
+        self._set_history_heatmap_preview(session_id, None, None, "Loading heatmap...")
+        self._style_chart(self.history_timeline_chart.chart(), "Loading selected session timeline")
+        self._run_background(
+            token,
+            lambda session_id=session_id, summary=summary, venue_map=_clone_venue_map(self.live_venue_map): self._load_history_session_payload(
+                session_id,
+                summary,
+                venue_map,
+            ),
+            self._apply_history_session,
+            self._handle_history_session_error,
+        )
 
+    def _load_history_session_payload(
+        self,
+        session_id: int,
+        summary: dict[str, object] | None,
+        venue_map: VenueMapConfig,
+    ) -> _HistorySessionPayload:
         metrics = self.repository.load_session_zone_metrics(session_id)
+        visits = self.repository.load_booth_visit_sessions(session_id)
+        heatmap = self.repository.load_session_heatmap(session_id)
+        heatmap_preview = _render_heatmap_image(heatmap, 640, 420, venue_map) if heatmap is not None else None
+        return _HistorySessionPayload(
+            session_id=session_id,
+            summary=summary,
+            metrics=metrics,
+            visits=visits,
+            heatmap=heatmap,
+            heatmap_preview=heatmap_preview,
+        )
+
+    def _apply_history_session(self, token: int, payload: object) -> None:
+        if token != self._history_session_token or not isinstance(payload, _HistorySessionPayload):
+            return
+        if self.session_selector.currentData() != payload.session_id:
+            return
+        if payload.summary is not None:
+            started_at = datetime.fromtimestamp(float(payload.summary["started_at"])).strftime("%Y-%m-%d %H:%M:%S")
+            ended_at = payload.summary["ended_at"]
+            ended_text = datetime.fromtimestamp(float(ended_at)).strftime("%Y-%m-%d %H:%M:%S") if ended_at else "running / interrupted"
+            self.history_summary_label.setText(f"Session #{payload.session_id} | start: {started_at} | end: {ended_text}")
+
+        metrics = payload.metrics
+        self._history_loaded_session_id = payload.session_id
+        self._history_loaded_metrics = metrics
+        self._history_loaded_visits = payload.visits
+        self._history_selected_heatmap = payload.heatmap
         self._populate_metrics_table(self.history_table, metrics)
         self._update_history_cards(metrics)
         zone_names = [str(row["zone_name"]) for row in metrics]
@@ -530,7 +768,13 @@ class StatisticsWindow(QMainWindow):
             self.history_timeline_zone_combo.setCurrentText(current_name)
         self.history_timeline_zone_combo.blockSignals(False)
         self._refresh_history_timeline()
-        self._populate_visit_sessions(self.repository.load_booth_visit_sessions(session_id))
+        self._populate_visit_sessions(payload.visits)
+        self._set_history_heatmap_preview(payload.session_id, payload.heatmap, payload.heatmap_preview)
+
+    def _handle_history_session_error(self, token: int, message: str) -> None:
+        if token != self._history_session_token:
+            return
+        self.history_summary_label.setText(f"Statistics unavailable: {message}")
 
     def _refresh_live_timeline(self) -> None:
         if self.current_session_id is None or not self.isVisible():
@@ -557,7 +801,7 @@ class StatisticsWindow(QMainWindow):
         zone_name = self.history_timeline_zone_combo.currentText()
         zone_id = self._zone_id_by_name(zone_name, self.live_venue_map)
         if zone_id is None:
-            for row in self.repository.load_session_zone_metrics(session_id):
+            for row in self._history_loaded_metrics:
                 if str(row["zone_name"]) == zone_name:
                     zone_id = str(row["zone_id"])
                     break
@@ -565,8 +809,33 @@ class StatisticsWindow(QMainWindow):
             self.history_timeline_chart.chart().removeAllSeries()
             self._style_chart(self.history_timeline_chart.chart(), "Selected session occupancy timeline")
             return
-        timeline = self.repository.load_zone_timeline(session_id, zone_id)
-        self._set_line_chart(self.history_timeline_chart.chart(), "Selected session occupancy timeline", timeline)
+        self._history_timeline_token += 1
+        token = self._history_timeline_token
+        self.history_timeline_chart.chart().removeAllSeries()
+        self._style_chart(self.history_timeline_chart.chart(), "Loading selected session timeline")
+        self._run_background(
+            token,
+            lambda session_id=session_id, zone_id=zone_id: _TimelinePayload(
+                session_id=session_id,
+                zone_id=zone_id,
+                timeline=self.repository.load_zone_timeline(session_id, zone_id),
+            ),
+            self._apply_history_timeline,
+            self._handle_history_timeline_error,
+        )
+
+    def _apply_history_timeline(self, token: int, payload: object) -> None:
+        if token != self._history_timeline_token or not isinstance(payload, _TimelinePayload):
+            return
+        if self.session_selector.currentData() != payload.session_id:
+            return
+        self._set_line_chart(self.history_timeline_chart.chart(), "Selected session occupancy timeline", payload.timeline)
+
+    def _handle_history_timeline_error(self, token: int, message: str) -> None:
+        if token != self._history_timeline_token:
+            return
+        self.history_timeline_chart.chart().removeAllSeries()
+        self._style_chart(self.history_timeline_chart.chart(), f"Timeline unavailable: {message}")
 
     def _populate_metrics_table(self, table: QTableWidget, rows: list[object]) -> None:
         table.setRowCount(len(rows))
@@ -644,7 +913,7 @@ class StatisticsWindow(QMainWindow):
         if not isinstance(session_id, int):
             QMessageBox.information(self, "Export CSV", "Select a history session first.")
             return
-        rows = self.repository.load_session_zone_metrics(session_id)
+        rows = self._history_loaded_metrics if self._history_loaded_session_id == session_id else []
         self._export_rows_to_csv(rows, f"session_{session_id}_booth_summary.csv")
 
     def _export_sessions_csv(self) -> None:
@@ -652,7 +921,7 @@ class StatisticsWindow(QMainWindow):
         if not isinstance(session_id, int):
             QMessageBox.information(self, "Export CSV", "Select a history session first.")
             return
-        rows = self.repository.load_booth_visit_sessions(session_id)
+        rows = self._history_loaded_visits if self._history_loaded_session_id == session_id else []
         normalized_rows = []
         for row in rows:
             normalized_rows.append(
@@ -683,11 +952,6 @@ class StatisticsWindow(QMainWindow):
                 return
             self._export_live_csv()
             return
-        summary_rows = self.repository.load_session_zone_metrics(session_id)
-        visits_rows = self.repository.load_booth_visit_sessions(session_id)
-        if not summary_rows and not visits_rows:
-            QMessageBox.information(self, "Export", "There is no session data to export yet.")
-            return
         target_dir = QFileDialog.getExistingDirectory(
             self,
             "Export session bundle",
@@ -695,7 +959,33 @@ class StatisticsWindow(QMainWindow):
         )
         if not target_dir:
             return
-        output_dir = Path(target_dir)
+        self._history_export_token += 1
+        token = self._history_export_token
+        self.history_bundle_export_button.setEnabled(False)
+        self.sessions_bundle_export_button.setEnabled(False)
+        self.history_summary_label.setText(f"Exporting session #{session_id} bundle...")
+        self._run_background(
+            token,
+            lambda session_id=session_id, output_dir=Path(target_dir), venue_map=_clone_venue_map(self.live_venue_map): self._write_session_bundle(
+                session_id,
+                output_dir,
+                venue_map,
+            ),
+            self._apply_history_export,
+            self._handle_history_export_error,
+        )
+
+    def _write_session_bundle(
+        self,
+        session_id: int,
+        output_dir: Path,
+        venue_map: VenueMapConfig,
+    ) -> _ExportPayload:
+        summary_rows = self.repository.load_session_zone_metrics(session_id)
+        visits_rows = self.repository.load_booth_visit_sessions(session_id)
+        heatmap = self.repository.load_session_heatmap(session_id)
+        if not summary_rows and not visits_rows and heatmap is None:
+            return _ExportPayload("Export", "There is no session data to export yet.")
         written_paths: list[Path] = []
         if summary_rows:
             summary_path = output_dir / f"session_{session_id}_booth_summary.csv"
@@ -718,10 +1008,71 @@ class StatisticsWindow(QMainWindow):
             visits_path = output_dir / f"session_{session_id}_visit_sessions.csv"
             self._write_csv(visits_path, visit_rows)
             written_paths.append(visits_path)
-        QMessageBox.information(
+        if heatmap is not None:
+            heatmap_path = output_dir / f"session_{session_id}_heatmap.png"
+            _write_heatmap_png(heatmap_path, heatmap, venue_map)
+            written_paths.append(heatmap_path)
+        return _ExportPayload("Export", "Saved files:\n" + "\n".join(str(path) for path in written_paths))
+
+    def _export_history_heatmap_png(self) -> None:
+        session_id = self.session_selector.currentData()
+        if not isinstance(session_id, int):
+            QMessageBox.information(self, "Export heatmap", "Select a history session first.")
+            return
+        heatmap = self._history_selected_heatmap
+        if heatmap is None:
+            QMessageBox.information(self, "Export heatmap", "This session has no heatmap data.")
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
             self,
-            "Export",
-            "Saved files:\n" + "\n".join(str(path) for path in written_paths),
+            "Export heatmap PNG",
+            str(Path.cwd() / f"session_{session_id}_heatmap.png"),
+            "PNG files (*.png)",
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        self._history_export_token += 1
+        token = self._history_export_token
+        self.history_heatmap_export_button.setEnabled(False)
+        self.history_summary_label.setText(f"Exporting session #{session_id} heatmap...")
+        self._run_background(
+            token,
+            lambda path=path, heatmap=heatmap, venue_map=_clone_venue_map(self.live_venue_map): self._write_history_heatmap_export(
+                path,
+                heatmap,
+                venue_map,
+            ),
+            self._apply_history_export,
+            self._handle_history_export_error,
+        )
+
+    @staticmethod
+    def _write_history_heatmap_export(
+        path: Path,
+        heatmap: HeatmapSnapshot,
+        venue_map: VenueMapConfig,
+    ) -> _ExportPayload:
+        _write_heatmap_png(path, heatmap, venue_map)
+        return _ExportPayload("Export heatmap", f"Saved PNG to:\n{path}")
+
+    def _apply_history_export(self, token: int, payload: object) -> None:
+        if token != self._history_export_token or not isinstance(payload, _ExportPayload):
+            return
+        self._restore_history_export_buttons()
+        QMessageBox.information(self, payload.title, payload.message)
+
+    def _handle_history_export_error(self, token: int, message: str) -> None:
+        if token != self._history_export_token:
+            return
+        self._restore_history_export_buttons()
+        QMessageBox.warning(self, "Export", f"Export failed: {message}")
+
+    def _restore_history_export_buttons(self) -> None:
+        self.history_bundle_export_button.setEnabled(True)
+        self.sessions_bundle_export_button.setEnabled(True)
+        self.history_heatmap_export_button.setEnabled(
+            isinstance(self.session_selector.currentData(), int) and self._history_selected_heatmap is not None
         )
 
     def _export_rows_to_csv(self, rows: list[dict[str, object]], default_name: str) -> None:
@@ -747,6 +1098,39 @@ class StatisticsWindow(QMainWindow):
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+
+    def _set_history_heatmap_preview(
+        self,
+        session_id: int | None,
+        heatmap: HeatmapSnapshot | None,
+        image: QImage | None,
+        empty_text: str = "No heatmap recorded",
+    ) -> None:
+        self.history_heatmap_export_button.setEnabled(session_id is not None and heatmap is not None)
+        if heatmap is None or image is None:
+            self.history_heatmap_preview.setText(empty_text)
+            self.history_heatmap_preview.setPixmap(QPixmap())
+            return
+        pixmap = QPixmap.fromImage(image).scaled(
+            self.history_heatmap_preview.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.history_heatmap_preview.setText("")
+        self.history_heatmap_preview.setPixmap(pixmap)
+
+    def _write_heatmap_png(self, path: Path, heatmap: HeatmapSnapshot) -> None:
+        _write_heatmap_png(path, heatmap, self.live_venue_map)
+
+    def _render_heatmap_image(self, heatmap: HeatmapSnapshot, width: int, height: int) -> QImage:
+        return _render_heatmap_image(heatmap, width, height, self.live_venue_map)
+
+    def _draw_heatmap_zones(
+        self,
+        painter: QPainter,
+        world_to_image,
+    ) -> None:
+        _draw_heatmap_zones(painter, world_to_image, self.live_venue_map)
 
     @staticmethod
     def _create_metric_card(title: str, value: str, accent: str) -> tuple[QFrame, QLabel]:

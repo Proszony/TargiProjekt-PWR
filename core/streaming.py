@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from core import runtime_defaults as rd
 from core.calibration import recompute_camera_coverage
 from core.coverage_mapping import propose_coverage_polygon_image
-from core.detection import YoloPersonDetector, annotate_frame, qimage_from_bgr
+from core.detection import annotate_frame, qimage_from_bgr
 from core.media_time import resolve_media_time, resolve_stream_fps
 from core.model_catalog import resolve_detector_model_spec
 from core.models import CameraConfig, CameraTrackingPacket, LocalTrack, PlaybackSyncConfig, VenueMapConfig
@@ -27,6 +28,17 @@ STREAM_OPTIONS = {
 }
 STREAM_OPEN_TIMEOUT_S = 1.0
 STREAM_READ_TIMEOUT_S = 1.0
+
+
+@dataclass(frozen=True)
+class _RuntimeConfigSnapshot:
+    camera_config: CameraConfig
+    venue_map: VenueMapConfig
+    tracker_config_path: str
+
+
+def _round_point(point: tuple[float, float]) -> tuple[float, float]:
+    return (round(float(point[0]), 6), round(float(point[1]), 6))
 
 
 class CameraPipelineWorker(QObject):
@@ -50,6 +62,7 @@ class CameraPipelineWorker(QObject):
         model_path: str = rd.DEFAULT_DETECTOR_MODEL_PATH,
         confidence: float = rd.DEFAULT_DETECTOR_CONFIDENCE,
         inference_size: int = rd.DEFAULT_DETECTOR_INFERENCE_SIZE,
+        preview_fps: float = rd.DEFAULT_OPERATOR_PREVIEW_FPS,
         on_frame_ready: Callable[[str, int, object], None] | None = None,
         on_camera_packet_ready: Callable[[object], None] | None = None,
         on_status_changed: Callable[[str], None] | None = None,
@@ -72,16 +85,12 @@ class CameraPipelineWorker(QObject):
         self._source_fps: float | None = None
         self._frame_index = 0
         self._dropped_frames = 0
+        self._preview_interval_s = 1.0 / max(preview_fps, 0.5)
+        self._last_preview_frame_published_at: float | None = None
         self._tracker_config_path = ""
         resolved_model_path = resolve_detector_model_spec(
             self.project_root,
             camera_config.detector_model_path or model_path,
-        )
-        self._detector = YoloPersonDetector(
-            resolved_model_path,
-            confidence=confidence,
-            inference_size=inference_size,
-            use_augmentation=rd.DEFAULT_DETECTOR_AUGMENTATION,
         )
         self._tracker = SimpleWorldTracker(
             track_timeout_s=rd.DEFAULT_TRACK_TIMEOUT_S,
@@ -108,6 +117,8 @@ class CameraPipelineWorker(QObject):
         self._on_fps_update = on_fps_update
         self._detection_enabled = True
         self._runtime_tracker_signature: tuple[object, ...] | None = None
+        self._coverage_recompute_signature: tuple[object, ...] | None = None
+        self._runtime_config = self._build_runtime_config_snapshot(camera_config, venue_map)
 
     @Slot()
     def run(self) -> None:
@@ -120,10 +131,11 @@ class CameraPipelineWorker(QObject):
         while self._running:
             try:
                 with self._config_lock:
-                    camera_config = CameraConfig.from_dict(self.camera_config.to_dict())
-                self._container = self._open_source(camera_config)
+                    runtime_config = self._runtime_config
+                source_config = runtime_config.camera_config
+                self._container = self._open_source(source_config)
                 self._prepare_source_timing()
-                self._publish_status_changed(f"Connected: {self._source_label(camera_config)}")
+                self._publish_status_changed(f"Connected: {self._source_label(source_config)}")
 
                 for frame in self._container.decode(video=0):
                     if not self._running:
@@ -132,7 +144,7 @@ class CameraPipelineWorker(QObject):
                     wall_time_s = time.time()
                     media_time_s = (
                         resolve_media_time(frame, self._source_fps, self._frame_index)
-                        if camera_config.source_type == "file"
+                        if source_config.source_type == "file"
                         else None
                     )
                     self._pace_file_frame(media_time_s)
@@ -147,27 +159,9 @@ class CameraPipelineWorker(QObject):
                     processing_started_at = time.perf_counter()
 
                     with self._config_lock:
-                        camera_config = CameraConfig.from_dict(self.camera_config.to_dict())
-                        venue_map = VenueMapConfig.from_dict(self.venue_map.to_dict())
-                        self._tracker_config_path = self._materialize_tracker_config(camera_config)
-                        resolved_model_spec = resolve_detector_model_spec(
-                            self.project_root,
-                            camera_config.detector_model_path or rd.DEFAULT_DETECTOR_MODEL_PATH,
-                        )
-                        self._detector.set_model_path(resolved_model_spec)
-                        self._detector.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
-                        self._tracker_adapter.set_model_path(resolved_model_spec)
-                        self._tracker_adapter.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
-                        self._tracker_adapter.confidence = self._detector.confidence
-                        self._tracker_adapter.inference_size = self._detector.inference_size
-                        self._tracker.track_timeout_s = rd.DEFAULT_TRACK_TIMEOUT_S
-                        self._tracker.max_world_distance_m = rd.DEFAULT_TRACKER_MAX_WORLD_DISTANCE_M
-                        self._tracker.max_image_distance_px = rd.DEFAULT_TRACKER_MAX_IMAGE_DISTANCE_PX
-                        self._tracker.max_missed_frames = rd.DEFAULT_TRACKER_MAX_MISSED_FRAMES
-                        self._tracker.min_iou = rd.DEFAULT_TRACKER_MIN_IOU
-                        self._tracker.anchor_weight = rd.DEFAULT_TRACKER_ANCHOR_WEIGHT
-                        self._tracker.iou_weight = rd.DEFAULT_TRACKER_IOU_WEIGHT
-                        self._tracker.confidence_weight = rd.DEFAULT_TRACKER_CONFIDENCE_WEIGHT
+                        runtime_config = self._runtime_config
+                    camera_config = runtime_config.camera_config
+                    venue_map = runtime_config.venue_map
 
                     local_tracks: dict[int, LocalTrack] = {}
                     expired_tracks: list[LocalTrack] = []
@@ -176,7 +170,7 @@ class CameraPipelineWorker(QObject):
                             frame_bgr,
                             timestamp,
                             camera_config,
-                            self._tracker_config_path,
+                            runtime_config.tracker_config_path,
                         )
                         local_tracks, expired_tracks = self._tracker.update(
                             camera_id=camera_config.camera_id,
@@ -188,13 +182,6 @@ class CameraPipelineWorker(QObject):
                     self._refresh_camera_coverage(camera_config, frame_bgr)
                     self._annotate_track_geometry(local_tracks, frame_bgr.shape[1], frame_bgr.shape[0])
                     self._annotate_expired_tracks(expired_tracks, frame_bgr.shape[1], frame_bgr.shape[0])
-                    annotated = annotate_frame(
-                        frame_bgr,
-                        local_tracks,
-                        camera_config,
-                        venue_map,
-                        render_timestamp=timestamp,
-                    )
                     processing_latency_s = time.perf_counter() - processing_started_at
                     processed_now = time.perf_counter()
                     if last_processed_frame_t is not None:
@@ -204,11 +191,20 @@ class CameraPipelineWorker(QObject):
                         smoothed_fps = self._source_fps
                     last_processed_frame_t = processed_now
                     self._publish_fps_update(smoothed_fps)
-                    self._publish_frame_ready(
-                        camera_config.camera_id,
-                        self._frame_index,
-                        qimage_from_bgr(annotated),
-                    )
+                    if self._preview_frame_due():
+                        annotated = annotate_frame(
+                            frame_bgr,
+                            local_tracks,
+                            camera_config,
+                            venue_map,
+                            render_timestamp=timestamp,
+                        )
+                        self._publish_frame_ready(
+                            camera_config.camera_id,
+                            self._frame_index,
+                            qimage_from_bgr(annotated),
+                        )
+                        self._last_preview_frame_published_at = time.perf_counter()
                     self._publish_camera_packet_ready(
                         CameraTrackingPacket(
                             camera_id=camera_config.camera_id,
@@ -216,9 +212,9 @@ class CameraPipelineWorker(QObject):
                             wall_time_s=wall_time_s,
                             media_time_s=media_time_s,
                             frame_index=self._frame_index,
-                            source_kind="file" if camera_config.source_type == "file" else "live",
+                            source_kind="file" if source_config.source_type == "file" else "live",
                             source_fps=self._source_fps,
-                            sync_ready=(media_time_s is not None) if camera_config.source_type == "file" else True,
+                            sync_ready=(media_time_s is not None) if source_config.source_type == "file" else True,
                             dropped_frame_count=self._dropped_frames,
                             processing_latency_s=processing_latency_s,
                             local_tracks=dict(local_tracks),
@@ -250,8 +246,8 @@ class CameraPipelineWorker(QObject):
 
                 if not self._running:
                     break
-                if camera_config.source_type == "file":
-                    if camera_config.loop_file:
+                if source_config.source_type == "file":
+                    if source_config.loop_file:
                         self._frame_index = 0
                         self._dropped_frames = 0
                         self._publish_status_changed("Reached end of file, restarting...")
@@ -274,7 +270,7 @@ class CameraPipelineWorker(QObject):
                     self._container = None
 
             if self._running:
-                time.sleep(0.5 if camera_config.source_type == "file" else 1.0)
+                time.sleep(0.5 if source_config.source_type == "file" else 1.0)
 
         self._publish_status_changed("Stopped")
         self._publish_stopped_listening()
@@ -287,6 +283,8 @@ class CameraPipelineWorker(QObject):
         with self._config_lock:
             self.camera_config = camera_config
             self.venue_map = venue_map
+            self._coverage_recompute_signature = None
+            self._runtime_config = self._build_runtime_config_snapshot(camera_config, venue_map)
 
     def set_playback_sync(
         self,
@@ -303,12 +301,13 @@ class CameraPipelineWorker(QObject):
         self._detection_enabled = enabled
 
     def set_confidence(self, confidence: float) -> None:
-        self._detector.confidence = confidence
-        self._tracker_adapter.confidence = confidence
+        with self._config_lock:
+            self._tracker_adapter.confidence = confidence
+            self._runtime_config = self._build_runtime_config_snapshot(self.camera_config, self.venue_map)
 
     def set_inference_size(self, inference_size: int) -> None:
-        self._detector.inference_size = inference_size
-        self._tracker_adapter.inference_size = inference_size
+        with self._config_lock:
+            self._tracker_adapter.inference_size = inference_size
 
     def _refresh_camera_coverage(
         self,
@@ -316,6 +315,7 @@ class CameraPipelineWorker(QObject):
         frame_bgr,
     ) -> None:
         if camera_config.homography_image_to_world is None:
+            self._coverage_recompute_signature = None
             return
         if not camera_config.coverage_polygon_image:
             proposal = propose_coverage_polygon_image(
@@ -327,6 +327,9 @@ class CameraPipelineWorker(QObject):
                 camera_config.coverage_auto_generated = True
                 camera_config.coverage_confidence = proposal.confidence
                 camera_config.coverage_warning_text = " | ".join(proposal.warnings)
+        coverage_signature = self._camera_coverage_signature(camera_config)
+        if coverage_signature == self._coverage_recompute_signature:
+            return
         coverage_result = recompute_camera_coverage(camera_config)
         camera_config.coverage_polygon_world_raw = coverage_result.raw_polygon_world or None
         camera_config.coverage_polygon_world = coverage_result.sanitized_polygon_world or None
@@ -342,15 +345,64 @@ class CameraPipelineWorker(QObject):
         camera_config.coverage_warning_text = " | ".join(coverage_result.warnings)
         camera_config.calibration_warning_text = " | ".join(dict.fromkeys(combined_warnings))
         camera_config.calibration_valid = bool(camera_config.homography_image_to_world) and coverage_result.is_valid
+        self._coverage_recompute_signature = coverage_signature
+
+    @staticmethod
+    def _camera_coverage_signature(camera_config: CameraConfig) -> tuple[object, ...]:
+        return (
+            tuple(
+                tuple(float(value) for value in row)
+                for row in (camera_config.homography_image_to_world or [])
+            ),
+            int(camera_config.frame_width),
+            int(camera_config.frame_height),
+            tuple(
+                (str(anchor.anchor_id), _round_point(anchor.image_point))
+                for anchor in camera_config.anchor_observations
+            ),
+            tuple(_round_point(point) for point in (camera_config.coverage_polygon_image or [])),
+        )
 
     def set_detector_model_path(self, model_path: str) -> None:
-        resolved = resolve_detector_model_spec(self.project_root, model_path or rd.DEFAULT_DETECTOR_MODEL_PATH)
-        self._detector.set_model_path(resolved)
-        self._tracker_adapter.set_model_path(resolved)
+        with self._config_lock:
+            resolved = resolve_detector_model_spec(self.project_root, model_path or rd.DEFAULT_DETECTOR_MODEL_PATH)
+            self._tracker_adapter.set_model_path(resolved)
 
     def set_detector_augmentation(self, enabled: bool) -> None:
-        self._detector.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
-        self._tracker_adapter.use_augmentation = rd.DEFAULT_DETECTOR_AUGMENTATION
+        with self._config_lock:
+            self._tracker_adapter.use_augmentation = bool(enabled)
+
+    def _build_runtime_config_snapshot(
+        self,
+        camera_config: CameraConfig,
+        venue_map: VenueMapConfig,
+    ) -> _RuntimeConfigSnapshot:
+        self._coverage_recompute_signature = None
+        camera_snapshot = CameraConfig.from_dict(camera_config.to_dict())
+        venue_snapshot = VenueMapConfig.from_dict(venue_map.to_dict())
+        resolved_model_spec = resolve_detector_model_spec(
+            self.project_root,
+            camera_snapshot.detector_model_path or rd.DEFAULT_DETECTOR_MODEL_PATH,
+        )
+        self._tracker_adapter.set_model_path(resolved_model_spec)
+        self._tracker_adapter.use_augmentation = camera_snapshot.detector_use_augmentation
+        self._apply_tracker_settings(camera_snapshot)
+        tracker_config_path = self._materialize_tracker_config(camera_snapshot)
+        return _RuntimeConfigSnapshot(
+            camera_config=camera_snapshot,
+            venue_map=venue_snapshot,
+            tracker_config_path=tracker_config_path,
+        )
+
+    def _apply_tracker_settings(self, camera_config: CameraConfig) -> None:
+        self._tracker.track_timeout_s = camera_config.track_timeout_s
+        self._tracker.max_world_distance_m = camera_config.tracker_max_world_distance_m
+        self._tracker.max_image_distance_px = camera_config.tracker_max_image_distance_px
+        self._tracker.max_missed_frames = camera_config.tracker_max_missed_frames
+        self._tracker.min_iou = camera_config.tracker_min_iou
+        self._tracker.anchor_weight = camera_config.tracker_anchor_weight
+        self._tracker.iou_weight = camera_config.tracker_iou_weight
+        self._tracker.confidence_weight = camera_config.tracker_confidence_weight
 
     def _open_source(self, camera_config: CameraConfig) -> av.container.InputContainer:
         self._source_fps = None
@@ -372,6 +424,11 @@ class CameraPipelineWorker(QObject):
         self.frame_ready.emit(camera_id, frame_index, image)
         if self._on_frame_ready is not None:
             self._on_frame_ready(camera_id, frame_index, image)
+
+    def _preview_frame_due(self) -> bool:
+        if self._last_preview_frame_published_at is None:
+            return True
+        return time.perf_counter() - self._last_preview_frame_published_at >= self._preview_interval_s
 
     def _publish_camera_packet_ready(self, packet: object) -> None:
         self.camera_packet_ready.emit(packet)
@@ -437,38 +494,38 @@ class CameraPipelineWorker(QObject):
 
     def _materialize_tracker_config(self, camera_config: CameraConfig) -> str:
         signature = (
-            rd.DEFAULT_TRACKER_BACKEND,
-            rd.DEFAULT_TRACKER_REID_ENABLED,
-            rd.DEFAULT_TRACKER_TRACK_BUFFER,
-            rd.DEFAULT_TRACKER_MATCH_THRESH,
-            rd.DEFAULT_TRACKER_NEW_TRACK_THRESH,
-            rd.DEFAULT_TRACKER_PROXIMITY_THRESH,
-            rd.DEFAULT_TRACKER_APPEARANCE_THRESH,
+            camera_config.tracker_backend,
+            camera_config.tracker_reid_enabled,
+            camera_config.tracker_track_buffer,
+            round(camera_config.tracker_match_thresh, 4),
+            round(camera_config.tracker_new_track_thresh, 4),
+            round(camera_config.tracker_proximity_thresh, 4),
+            round(camera_config.tracker_appearance_thresh, 4),
             round(self._tracker_adapter.confidence, 4),
         )
         runtime_dir = Path.cwd() / "data" / "runtime_trackers"
         runtime_dir.mkdir(parents=True, exist_ok=True)
-        runtime_path = runtime_dir / f"{camera_config.camera_id}_{rd.DEFAULT_TRACKER_BACKEND}.yaml"
+        backend = camera_config.tracker_backend
+        runtime_path = runtime_dir / f"{camera_config.camera_id}_{backend}.yaml"
         if signature == self._runtime_tracker_signature and runtime_path.exists():
             return str(runtime_path)
 
-        backend = rd.DEFAULT_TRACKER_BACKEND
         lines = [
             f"tracker_type: {backend}",
             f"track_high_thresh: {max(self._tracker_adapter.confidence, 0.1):.3f}",
             "track_low_thresh: 0.05",
-            f"new_track_thresh: {rd.DEFAULT_TRACKER_NEW_TRACK_THRESH:.3f}",
-            f"track_buffer: {rd.DEFAULT_TRACKER_TRACK_BUFFER}",
-            f"match_thresh: {rd.DEFAULT_TRACKER_MATCH_THRESH:.3f}",
+            f"new_track_thresh: {camera_config.tracker_new_track_thresh:.3f}",
+            f"track_buffer: {camera_config.tracker_track_buffer}",
+            f"match_thresh: {camera_config.tracker_match_thresh:.3f}",
             "fuse_score: True",
         ]
         if backend == "botsort":
             lines.extend(
                 [
                     "gmc_method: sparseOptFlow",
-                    f"proximity_thresh: {rd.DEFAULT_TRACKER_PROXIMITY_THRESH:.3f}",
-                    f"appearance_thresh: {rd.DEFAULT_TRACKER_APPEARANCE_THRESH:.3f}",
-                    f"with_reid: {'True' if rd.DEFAULT_TRACKER_REID_ENABLED else 'False'}",
+                    f"proximity_thresh: {camera_config.tracker_proximity_thresh:.3f}",
+                    f"appearance_thresh: {camera_config.tracker_appearance_thresh:.3f}",
+                    f"with_reid: {'True' if camera_config.tracker_reid_enabled else 'False'}",
                     "model: auto",
                 ]
             )

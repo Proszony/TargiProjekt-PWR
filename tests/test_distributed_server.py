@@ -2,7 +2,7 @@ import socket
 import time
 import unittest
 
-from core.distributed_protocol import pack_message, unpack_from_buffer
+from core.distributed_protocol import MESSAGE_WORKER_CONFIG, pack_message, unpack_from_buffer
 from core.distributed_serialization import camera_config_sha256
 from core.models import CameraConfig, DistributedRuntimeConfig, ProjectConfig
 
@@ -64,6 +64,15 @@ class DistributedServerTests(unittest.TestCase):
         sock.sendall(pack_message(hello))
         return sock
 
+    def _read_one_message(self, sock: socket.socket) -> dict[str, object]:
+        sock.settimeout(2.0)
+        buffer = bytearray()
+        while True:
+            buffer.extend(sock.recv(65536))
+            messages = unpack_from_buffer(buffer)
+            if messages:
+                return messages[0]
+
     def test_protocol_mismatch_is_rejected(self) -> None:
         sock = self._connect_and_send_hello(protocol_version="2.0")
         payload = bytearray(sock.recv(4096))
@@ -85,6 +94,39 @@ class DistributedServerTests(unittest.TestCase):
 
         self.assertEqual(messages[0]["type"], "error")
         self.assertIn("duplicate camera connection", messages[0]["message"])
+
+    def test_worker_config_is_sent_after_hello(self) -> None:
+        sock = self._connect_and_send_hello(worker_id="")
+        message = self._read_one_message(sock)
+        sock.close()
+
+        self.assertEqual(message["type"], MESSAGE_WORKER_CONFIG)
+        payload = message["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload["camera_id"], "camera-1")
+        self.assertEqual(payload["camera_config"]["remote_worker_id"], "edge-1")
+
+    def test_project_update_pushes_worker_config(self) -> None:
+        sock = self._connect_and_send_hello()
+        self._read_one_message(sock)
+
+        updated_camera = CameraConfig(
+            camera_id="camera-1",
+            runtime_mode="remote",
+            remote_worker_id="edge-1",
+            source_value="udp://127.0.0.1:7001",
+        )
+        self.server.update_project_config(
+            ProjectConfig(
+                cameras=[updated_camera],
+                distributed_runtime=self.project.distributed_runtime,
+            )
+        )
+        message = self._read_one_message(sock)
+        sock.close()
+
+        self.assertEqual(message["type"], MESSAGE_WORKER_CONFIG)
+        self.assertEqual(message["payload"]["camera_config"]["source_value"], "udp://127.0.0.1:7001")
 
     def test_timeout_marks_remote_camera_unavailable(self) -> None:
         sock = self._connect_and_send_hello()

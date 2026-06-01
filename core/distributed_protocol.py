@@ -6,6 +6,7 @@ from typing import Any
 
 MESSAGE_HELLO = "hello"
 MESSAGE_HEARTBEAT = "heartbeat"
+MESSAGE_WORKER_CONFIG = "worker_config"
 MESSAGE_START_SESSION = "start_session"
 MESSAGE_STOP_SESSION = "stop_session"
 MESSAGE_CAMERA_PACKET = "camera_packet"

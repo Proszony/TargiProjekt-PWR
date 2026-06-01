@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from core.models import (
+    AnalyticsConfig,
     CameraConfig,
     CameraTrackingPacket,
     DistributedRuntimeConfig,
@@ -20,6 +24,7 @@ from core.statistics_service import StatisticsService
 try:
     from PySide6.QtCore import QByteArray, QBuffer, QIODevice
     from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import QApplication
 
     from core.multi_camera_runtime import MultiCameraPipelineManager
 except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
@@ -29,6 +34,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional UI dependency
     QIODevice = None
     QColor = None
     QImage = None
+    QApplication = None
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
@@ -94,6 +100,12 @@ def _jpeg_preview(camera_id: str, *, frame_index: int) -> dict[str, object]:
 
 @unittest.skipIf(MultiCameraPipelineManager is None, f"UI dependencies unavailable: {_IMPORT_ERROR}")
 class DistributedRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        if QApplication is not None:
+            cls._app = QApplication.instance() or QApplication([])
+
     def test_single_file_camera_uses_realtime_session_mode(self) -> None:
         mode = MultiCameraPipelineManager._determine_session_sync_mode(
             [CameraConfig(camera_id="camera-1", source_type="file")]
@@ -128,6 +140,7 @@ class DistributedRuntimeTests(unittest.TestCase):
                         )
                     ]
                 ),
+                analytics=AnalyticsConfig(zone_entry_min_duration_s=0.0),
                 cameras=[
                     CameraConfig(
                         camera_id="camera-local",
@@ -191,7 +204,59 @@ class DistributedRuntimeTests(unittest.TestCase):
 
             self.assertIn(("camera-remote", 17.5), fps_updates)
 
-    def test_remote_preview_refreshes_even_when_packet_frame_index_differs(self) -> None:
+    def test_local_operator_preview_uses_worker_gated_frames_without_skipping_analytics(self) -> None:
+        if QImage is None or QColor is None:
+            self.skipTest("Qt image helpers unavailable.")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-local",
+                        runtime_mode="local",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            rendered_frames: list[QImage] = []
+            snapshots: list[MultiCameraRuntimeSnapshot] = []
+            manager.camera_frame_ready.connect(
+                lambda camera_id, image: rendered_frames.append(image)
+                if camera_id == "camera-local" and isinstance(image, QImage)
+                else None
+            )
+            manager.runtime_snapshot_ready.connect(lambda snapshot: snapshots.append(snapshot))
+            frame = QImage(320, 180, QImage.Format_RGB32)
+            frame.fill(QColor("#020617"))
+
+            first_packet = _packet(
+                "camera-local",
+                "camera-local:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=1,
+            )
+            second_packet = _packet(
+                "camera-local",
+                "camera-local:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=2,
+            )
+            first_packet.local_tracks[1].current_bbox_xyxy = None
+            first_packet.local_tracks[1].last_bbox_xyxy_for_matching = None
+            second_packet.local_tracks[1].current_bbox_xyxy = None
+            second_packet.local_tracks[1].last_bbox_xyxy_for_matching = None
+            manager._handle_camera_frame("camera-local", 1, frame)
+            manager._handle_camera_packet(first_packet)
+            manager._handle_camera_packet(second_packet)
+
+            self.assertEqual(len(rendered_frames), 1)
+            self.assertEqual(len(snapshots), 2)
+
+    def test_remote_preview_refreshes_when_labels_change_without_packet_frame_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             project = ProjectConfig(
@@ -225,7 +290,43 @@ class DistributedRuntimeTests(unittest.TestCase):
                 )
             )
 
-            self.assertGreaterEqual(len(rendered_frames), 2)
+            self.assertEqual(len(rendered_frames), 2)
+
+    def test_remote_preview_skips_relabel_when_preview_and_labels_are_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-remote",
+                        runtime_mode="remote",
+                        remote_worker_id="edge-1",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+                distributed_runtime=DistributedRuntimeConfig(enabled=True),
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            rendered_frames: list[QImage] = []
+            manager.camera_frame_ready.connect(
+                lambda camera_id, image: rendered_frames.append(image)
+                if camera_id == "camera-remote" and isinstance(image, QImage)
+                else None
+            )
+
+            manager._handle_remote_preview_frame(_jpeg_preview("camera-remote", frame_index=10))
+            packet = _packet(
+                "camera-remote",
+                "camera-remote:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=12,
+            )
+            manager._handle_remote_packet(packet)
+            manager._handle_remote_packet(packet)
+
+            self.assertEqual(len(rendered_frames), 2)
 
 
 if __name__ == "__main__":
