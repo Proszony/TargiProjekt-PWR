@@ -19,6 +19,7 @@ from core.distributed_protocol import (
     MESSAGE_START_SESSION,
     MESSAGE_STATUS,
     MESSAGE_STOP_SESSION,
+    MESSAGE_WORKER_CONFIG,
     pack_message,
     unpack_from_buffer,
 )
@@ -26,6 +27,7 @@ from core.distributed_serialization import (
     camera_config_sha256,
     camera_tracking_packet_to_network_dict,
     preview_frame_to_network_dict,
+    worker_config_from_network_dict,
 )
 from core.models import CameraConfig, CameraTrackingPacket, PlaybackSyncConfig, ProjectConfig
 from core.statistics_service import StatisticsService
@@ -55,6 +57,7 @@ class DistributedCameraWorker:
         self._session_sync_mode = "all_live_unsynced"
         self._session_started_at_unix_s: float | None = None
         self._playback_sync = PlaybackSyncConfig.from_dict(self.project_config.playback_sync.to_dict())
+        self._server_config_hash = ""
         self._pipeline_worker: CameraPipelineWorker | None = None
         self._pipeline_thread: threading.Thread | None = None
         self._preview_interval_s = 1.0 / max(self.project_config.distributed_runtime.preview_fps, 0.5)
@@ -102,7 +105,7 @@ class DistributedCameraWorker:
         self._send_message(
             {
                 "type": MESSAGE_HELLO,
-                "worker_id": self.camera_config.remote_worker_id or socket.gethostname(),
+                "worker_id": self.camera_config.remote_worker_id,
                 "camera_id": self.camera_id,
                 "app_version": "distributed-runtime-test",
                 "hostname": socket.gethostname(),
@@ -134,6 +137,11 @@ class DistributedCameraWorker:
 
     def _handle_message(self, message: dict[str, object]) -> None:
         message_type = str(message.get("type", ""))
+        if message_type == MESSAGE_WORKER_CONFIG:
+            payload = message.get("payload", {})
+            if isinstance(payload, dict):
+                self._apply_worker_config(payload)
+            return
         if message_type == MESSAGE_START_SESSION:
             self._session_sync_mode = str(message.get("session_sync_mode", "all_live_unsynced"))
             session_started_at = message.get("session_started_at_unix_s")
@@ -175,6 +183,42 @@ class DistributedCameraWorker:
         self._pipeline_worker = worker
         self._pipeline_thread = threading.Thread(target=worker.run, name=f"worker-{self.camera_id}", daemon=True)
         self._pipeline_thread.start()
+
+    def _apply_worker_config(self, payload: dict[str, object]) -> None:
+        camera_config, venue_map, playback_sync, distributed_runtime, config_hash = (
+            worker_config_from_network_dict(payload)
+        )
+        if camera_config.camera_id != self.camera_id:
+            self._handle_error(
+                f"server sent config for '{camera_config.camera_id}' to worker '{self.camera_id}'"
+            )
+            return
+        previous_source = self._source_signature(self.camera_config)
+        next_source = self._source_signature(camera_config)
+        self.camera_config = camera_config
+        self.project_config.venue_map = venue_map
+        self.project_config.playback_sync = playback_sync
+        self.project_config.distributed_runtime = distributed_runtime
+        self._playback_sync = PlaybackSyncConfig.from_dict(playback_sync.to_dict())
+        self._server_config_hash = config_hash
+        self._preview_interval_s = 1.0 / max(distributed_runtime.preview_fps, 0.5)
+        worker = self._pipeline_worker
+        thread = self._pipeline_thread
+        if worker is None or thread is None or not thread.is_alive():
+            return
+        if previous_source != next_source:
+            self._stop_pipeline()
+            self._start_pipeline()
+            return
+        worker.update_configs(
+            CameraConfig.from_dict(self.camera_config.to_dict()),
+            self.project_config.venue_map,
+        )
+        worker.set_playback_sync(
+            self._playback_sync,
+            self._file_playback_started_wall_time(),
+            self._session_sync_mode,
+        )
 
     def _stop_pipeline(self) -> None:
         worker = self._pipeline_worker
@@ -282,7 +326,11 @@ class DistributedCameraWorker:
         for camera in project_config.cameras:
             if camera.camera_id == self.camera_id:
                 return CameraConfig.from_dict(camera.to_dict())
-        raise ValueError(f"Camera '{self.camera_id}' not found in project config.")
+        return CameraConfig(camera_id=self.camera_id, runtime_mode="remote", enabled=True)
+
+    @staticmethod
+    def _source_signature(camera_config: CameraConfig) -> tuple[str, str, bool]:
+        return camera_config.source_type, camera_config.source_value, camera_config.loop_file
 
     def _encode_jpeg(self, image: QImage) -> bytes:
         encoded_image = image
