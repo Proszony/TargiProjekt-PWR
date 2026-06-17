@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parent.parent
+    os.chdir(project_root)
     if args.mode == "worker":
         if not args.camera_id:
             parser.error("--camera-id is required in worker mode")

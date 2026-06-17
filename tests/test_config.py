@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from core.config import ConfigRepository
-from core.models import CameraConfig, ProjectConfig, VenueMapConfig
+from core.models import CameraConfig, ProjectConfig, ReIDConfig, VenueMapConfig
 
 
 class ConfigCompatibilityTests(unittest.TestCase):
@@ -46,6 +46,27 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(dumped["detector_model_path"], "models/custom.pt")
         self.assertNotIn("tracker_backend", dumped)
         self.assertNotIn("coverage_polygon_world", dumped)
+
+    def test_path_like_config_values_are_normalized_to_forward_slashes(self) -> None:
+        camera = CameraConfig.from_dict(
+            {
+                "camera_id": "camera-1",
+                "source_type": "file",
+                "source_value": r"videos\demo.mp4",
+                "detector_model_path": r"models\custom.pt",
+            }
+        )
+        venue = VenueMapConfig.from_dict({"map_image_path": r"assets\venue_maps\map.png"})
+        reid = ReIDConfig.from_dict({"weights_path": r"models\reid\weights.pth"})
+
+        self.assertEqual(camera.source_value, "videos/demo.mp4")
+        self.assertEqual(camera.detector_model_path, "models/custom.pt")
+        self.assertEqual(camera.to_persisted_dict()["source_value"], "videos/demo.mp4")
+        self.assertEqual(camera.to_persisted_dict()["detector_model_path"], "models/custom.pt")
+        self.assertEqual(venue.map_image_path, "assets/venue_maps/map.png")
+        self.assertEqual(venue.to_dict()["map_image_path"], "assets/venue_maps/map.png")
+        self.assertEqual(reid.weights_path, "models/reid/weights.pth")
+        self.assertEqual(reid.to_dict()["weights_path"], "models/reid/weights.pth")
 
     def test_repository_migrates_legacy_project_to_canonical_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

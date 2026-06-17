@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
@@ -49,9 +50,10 @@ class DistributedRuntimeServer(QObject):
     camera_status_changed = Signal(str, str)
     camera_error = Signal(str, str)
 
-    def __init__(self, project_config: ProjectConfig) -> None:
+    def __init__(self, project_config: ProjectConfig, project_root: Path | None = None) -> None:
         super().__init__()
         self.project_config = ProjectConfig.from_dict(project_config.to_dict())
+        self.project_root = project_root
         self._lock = threading.Lock()
         self._server_socket: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
@@ -345,7 +347,7 @@ class DistributedRuntimeServer(QObject):
             connection,
             {
                 "type": MESSAGE_WORKER_CONFIG,
-                "payload": worker_config_to_network_dict(self.project_config, camera_config),
+                "payload": worker_config_to_network_dict(self.project_config, camera_config, self.project_root),
             },
         )
 

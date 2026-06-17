@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -608,10 +610,39 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self.project_config.venue_map.map_image_path = path
+        try:
+            self.project_config.venue_map.map_image_path = self._project_relative_map_asset_path(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Map image", f"Could not copy map image into the project:\n{exc}")
+            return
         self._refresh_from_project()
         if self.runtime_manager is not None:
             self.runtime_manager.update_project_config(self.project_config)
+
+    def _project_relative_map_asset_path(self, selected_path: str) -> str:
+        source_path = Path(selected_path).expanduser().resolve()
+        project_root = self.project_root.resolve()
+        try:
+            return source_path.relative_to(project_root).as_posix()
+        except ValueError:
+            pass
+
+        asset_dir = project_root / "assets" / "venue_maps"
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(source_path.read_bytes()).hexdigest()[:12]
+        safe_stem = self._safe_asset_name(source_path.stem) or "venue-map"
+        suffix = source_path.suffix.lower() or ".png"
+        destination = asset_dir / f"{safe_stem}-{digest}{suffix}"
+        if not destination.exists():
+            shutil.copy2(source_path, destination)
+        return destination.relative_to(project_root).as_posix()
+
+    @staticmethod
+    def _safe_asset_name(value: str) -> str:
+        return "".join(
+            character if character.isalnum() or character in {"-", "_"} else "_"
+            for character in value
+        ).strip("_")
 
     @Slot()
     def save_configuration(self) -> None:

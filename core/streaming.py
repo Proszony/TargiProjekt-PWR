@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from core import runtime_defaults as rd
 from core.calibration import recompute_camera_coverage
+from core.config_models import normalize_config_path
 from core.coverage_mapping import propose_coverage_polygon_image
 from core.detection import annotate_frame, qimage_from_bgr
 from core.media_time import resolve_media_time, resolve_stream_fps
@@ -409,7 +410,7 @@ class CameraPipelineWorker(QObject):
         self._frame_index = 0
         self._dropped_frames = 0
         if camera_config.source_type == "file":
-            source_path = Path(camera_config.source_value).expanduser()
+            source_path = Path(normalize_config_path(camera_config.source_value)).expanduser()
             if not source_path.is_absolute():
                 source_path = (self.project_root / source_path).resolve()
             return av.open(str(source_path))

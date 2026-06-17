@@ -186,7 +186,7 @@ class DistributedCameraWorker:
 
     def _apply_worker_config(self, payload: dict[str, object]) -> None:
         camera_config, venue_map, playback_sync, distributed_runtime, config_hash = (
-            worker_config_from_network_dict(payload)
+            worker_config_from_network_dict(payload, getattr(self, "project_root", None))
         )
         if camera_config.camera_id != self.camera_id:
             self._handle_error(

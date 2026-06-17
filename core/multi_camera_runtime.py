@@ -633,7 +633,7 @@ class MultiCameraPipelineManager(QObject):
         if self._remote_server is not None:
             self._remote_server.update_project_config(self.project_config)
             return
-        server = DistributedRuntimeServer(self.project_config)
+        server = DistributedRuntimeServer(self.project_config, self.project_root)
         server.camera_packet_received.connect(self._handle_remote_packet)
         server.preview_frame_received.connect(self._handle_remote_preview_frame)
         server.camera_status_changed.connect(self._handle_remote_camera_status)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from core.models import (
@@ -13,7 +14,10 @@ from core.models import (
     PlaybackSyncConfig,
     ProjectConfig,
     VenueMapConfig,
+    normalize_config_path,
 )
+
+VENUE_MAP_ASSET_DIR = Path("data") / "distributed_assets" / "venue"
 
 
 def camera_config_sha256(camera_config: CameraConfig) -> str:
@@ -26,9 +30,13 @@ def camera_config_sha256(camera_config: CameraConfig) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def worker_config_to_network_dict(project_config: ProjectConfig, camera_config: CameraConfig) -> dict[str, Any]:
+def worker_config_to_network_dict(
+    project_config: ProjectConfig,
+    camera_config: CameraConfig,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
     camera_snapshot = CameraConfig.from_dict(camera_config.to_dict())
-    return {
+    payload = {
         "camera_id": camera_snapshot.camera_id,
         "camera_config": camera_snapshot.to_dict(),
         "venue_map": project_config.venue_map.to_dict(),
@@ -36,16 +44,105 @@ def worker_config_to_network_dict(project_config: ProjectConfig, camera_config: 
         "distributed_runtime": project_config.distributed_runtime.to_dict(),
         "config_hash": camera_config_sha256(camera_snapshot),
     }
+    venue_map_asset = venue_map_asset_to_network_dict(project_config.venue_map, project_root)
+    if venue_map_asset is not None:
+        payload["venue_map_asset"] = venue_map_asset
+    return payload
 
 
 def worker_config_from_network_dict(
     data: dict[str, Any],
+    project_root: Path | None = None,
 ) -> tuple[CameraConfig, VenueMapConfig, PlaybackSyncConfig, DistributedRuntimeConfig, str]:
     camera_config = CameraConfig.from_dict(data.get("camera_config", {}))
     venue_map = VenueMapConfig.from_dict(data.get("venue_map", {}))
+    materialize_venue_map_asset(data.get("venue_map_asset"), venue_map, project_root)
     playback_sync = PlaybackSyncConfig.from_dict(data.get("playback_sync", {}))
     distributed_runtime = DistributedRuntimeConfig.from_dict(data.get("distributed_runtime", {}))
     return camera_config, venue_map, playback_sync, distributed_runtime, str(data.get("config_hash", ""))
+
+
+def venue_map_asset_to_network_dict(
+    venue_map: VenueMapConfig,
+    project_root: Path | None = None,
+) -> dict[str, Any] | None:
+    if not venue_map.map_image_path:
+        return None
+    source_path = _resolve_project_path(venue_map.map_image_path, project_root)
+    if source_path is None or not source_path.is_file():
+        return None
+    asset_bytes = source_path.read_bytes()
+    digest = hashlib.sha256(asset_bytes).hexdigest()
+    safe_name = _safe_filename(source_path.name)
+    relative_path = _relative_asset_path(venue_map.map_image_path, safe_name, digest)
+    return {
+        "kind": "venue_map_image",
+        "relative_path": relative_path,
+        "sha256": digest,
+        "bytes": asset_bytes,
+    }
+
+
+def materialize_venue_map_asset(
+    asset_data: object,
+    venue_map: VenueMapConfig,
+    project_root: Path | None = None,
+) -> None:
+    if not isinstance(asset_data, dict) or project_root is None:
+        return
+    if str(asset_data.get("kind", "")) != "venue_map_image":
+        return
+    asset_bytes = asset_data.get("bytes")
+    if not isinstance(asset_bytes, (bytes, bytearray, memoryview)):
+        return
+    expected_sha = str(asset_data.get("sha256", ""))
+    payload = bytes(asset_bytes)
+    actual_sha = hashlib.sha256(payload).hexdigest()
+    if expected_sha and expected_sha != actual_sha:
+        return
+    relative_path = _safe_relative_path(str(asset_data.get("relative_path", "")))
+    if relative_path is None:
+        relative_path = VENUE_MAP_ASSET_DIR / f"{actual_sha[:12]}-venue-map"
+    destination = project_root / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists() or hashlib.sha256(destination.read_bytes()).hexdigest() != actual_sha:
+        destination.write_bytes(payload)
+    venue_map.map_image_path = relative_path.as_posix()
+
+
+def _resolve_project_path(path_value: str, project_root: Path | None) -> Path | None:
+    if not path_value:
+        return None
+    candidate = Path(normalize_config_path(path_value)).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    if project_root is None:
+        return candidate
+    return project_root / candidate
+
+
+def _relative_asset_path(path_value: str, safe_name: str, digest: str) -> str:
+    configured_path = _safe_relative_path(path_value)
+    if configured_path is not None:
+        return configured_path.as_posix()
+    return (VENUE_MAP_ASSET_DIR / f"{digest[:12]}-{safe_name}").as_posix()
+
+
+def _safe_relative_path(path_value: str) -> Path | None:
+    if not path_value:
+        return None
+    candidate = Path(normalize_config_path(path_value))
+    if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+        return None
+    return candidate
+
+
+def _safe_filename(filename: str) -> str:
+    cleaned = "".join(
+        character if character.isalnum() or character in {".", "-", "_"} else "_"
+        for character in filename
+    ).strip("._")
+    return cleaned or "venue-map"
 
 
 def camera_tracking_packet_to_network_dict(packet: CameraTrackingPacket) -> dict[str, Any]:

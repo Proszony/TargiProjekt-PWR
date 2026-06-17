@@ -48,7 +48,8 @@ Tryb rozproszony
   python -m app.main --mode worker --camera-id camera-1 --server-host 192.168.1.10 --server-port 6100
   ```
 - Kamera przypisana do workera musi mieć w konfiguracji `runtime_mode = remote`.
-- W tej iteracji konfiguracja projektu jest kopiowana ręcznie na host workerowy.
+- Konfiguracja kamery, mapy, synchronizacji i runtime jest wysyłana z serwera do workera po połączeniu.
+- Obraz mapy z `venue.json` jest pobierany przez workera, jeżeli plik istnieje po stronie serwera. Nowo wybrane mapy są zapisywane w projekcie jako ścieżki względne.
 
 Konfiguracja
 ------------
@@ -57,6 +58,7 @@ Konfiguracja
 - `config/venue.json`: mapa hali i strefy / stoiska.
 - `project.distributed_runtime`: ustawienia serwera TCP i heartbeatów workerów.
 - `camera.runtime_mode` / `camera.remote_worker_id`: przypisanie kamery do trybu lokalnego lub zdalnego workera.
+- Ścieżki plików w konfiguracji powinny być względne do katalogu projektu i zapisywane z ukośnikami `/`, co działa na Windows i Linux.
 
 Jeżeli nie wczytasz pliku mapy, aplikacja użyje pustego tła z siatką i nadal pozwoli kalibrować oraz rysować strefy w przestrzeni 2D.
 

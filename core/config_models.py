@@ -8,6 +8,10 @@ from core import runtime_defaults as rd
 Point = tuple[float, float]
 
 
+def normalize_config_path(path_value: object) -> str:
+    return str(path_value or "").replace("\\", "/")
+
+
 @dataclass(slots=True)
 class SharedAnchor:
     anchor_id: str
@@ -215,7 +219,7 @@ class ReIDConfig:
             enabled=bool(data.get("enabled", rd.DEFAULT_REID_ENABLED)),
             backend=backend,
             model_name=str(data.get("model_name", rd.DEFAULT_REID_MODEL_NAME)),
-            weights_path=str(data.get("weights_path", rd.DEFAULT_REID_WEIGHTS_PATH)),
+            weights_path=normalize_config_path(data.get("weights_path", rd.DEFAULT_REID_WEIGHTS_PATH)),
             weights_url=str(data.get("weights_url", rd.DEFAULT_REID_WEIGHTS_URL)),
             download_if_missing=bool(data.get("download_if_missing", rd.DEFAULT_REID_DOWNLOAD_IF_MISSING)),
             min_bbox_height_px=int(data.get("min_bbox_height_px", rd.DEFAULT_REID_MIN_BBOX_HEIGHT_PX)),
@@ -258,7 +262,7 @@ class ReIDConfig:
             "enabled": self.enabled,
             "backend": self.backend,
             "model_name": self.model_name,
-            "weights_path": self.weights_path,
+            "weights_path": normalize_config_path(self.weights_path),
             "weights_url": self.weights_url,
             "download_if_missing": self.download_if_missing,
             "min_bbox_height_px": self.min_bbox_height_px,
@@ -592,7 +596,7 @@ class VenueMapConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VenueMapConfig":
         return cls(
-            map_image_path=str(data.get("map_image_path", "")),
+            map_image_path=normalize_config_path(data.get("map_image_path", "")),
             zones=[ZoneDefinition.from_dict(zone) for zone in data.get("zones", [])],
             metric_mode=str(data.get("metric_mode", "relative")),
             manual_viewport_override=(
@@ -604,7 +608,7 @@ class VenueMapConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "map_image_path": self.map_image_path,
+            "map_image_path": normalize_config_path(self.map_image_path),
             "zones": [zone.to_dict() for zone in self.zones],
             "metric_mode": self.metric_mode,
         }
@@ -662,6 +666,10 @@ class CameraConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CameraConfig":
+        source_type = str(data.get("source_type", "udp"))
+        source_value = str(data.get("source_value", data.get("udp_url", "udp://0.0.0.0:5000")))
+        if source_type == "file":
+            source_value = normalize_config_path(source_value)
         homography = data.get("homography_image_to_world")
         coverage_polygon_image = [
             (float(point[0]), float(point[1]))
@@ -677,8 +685,8 @@ class CameraConfig:
             camera_id=str(data.get("camera_id", "camera-1")),
             name=str(data.get("name", "Camera 1")),
             display_order=int(data.get("display_order", 0)),
-            source_type=str(data.get("source_type", "udp")),
-            source_value=str(data.get("source_value", data.get("udp_url", "udp://0.0.0.0:5000"))),
+            source_type=source_type,
+            source_value=source_value,
             loop_file=bool(data.get("loop_file", False)),
             runtime_mode=str(data.get("runtime_mode", "local")),
             remote_worker_id=str(data.get("remote_worker_id", "")),
@@ -698,7 +706,9 @@ class CameraConfig:
                 CameraAnchorObservation.from_dict(item) for item in data.get("anchor_observations", [])
             ],
             overlap_camera_ids=[str(value) for value in data.get("overlap_camera_ids", [])],
-            detector_model_path=str(data.get("detector_model_path", rd.DEFAULT_DETECTOR_MODEL_PATH)),
+            detector_model_path=normalize_config_path(
+                data.get("detector_model_path", rd.DEFAULT_DETECTOR_MODEL_PATH)
+            ),
             detector_use_augmentation=bool(
                 data.get("detector_use_augmentation", rd.DEFAULT_DETECTOR_AUGMENTATION)
             ),
@@ -757,7 +767,7 @@ class CameraConfig:
         payload = self.to_persisted_dict()
         payload.update(
             {
-                "detector_model_path": self.detector_model_path,
+                "detector_model_path": normalize_config_path(self.detector_model_path),
                 "detector_use_augmentation": self.detector_use_augmentation,
                 "tracker_backend": self.tracker_backend,
                 "tracker_reid_enabled": self.tracker_reid_enabled,
@@ -794,11 +804,13 @@ class CameraConfig:
             "name": self.name,
             "display_order": self.display_order,
             "source_type": self.source_type,
-            "source_value": self.source_value,
+            "source_value": (
+                normalize_config_path(self.source_value) if self.source_type == "file" else self.source_value
+            ),
             "loop_file": self.loop_file,
             "runtime_mode": self.runtime_mode,
             "enabled": self.enabled,
-            "detector_model_path": self.detector_model_path,
+            "detector_model_path": normalize_config_path(self.detector_model_path),
         }
         if self.remote_worker_id:
             payload["remote_worker_id"] = self.remote_worker_id

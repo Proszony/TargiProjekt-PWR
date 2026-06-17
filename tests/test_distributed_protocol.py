@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from core.distributed_protocol import pack_message, unpack_from_buffer
 from core.distributed_serialization import (
@@ -6,8 +8,10 @@ from core.distributed_serialization import (
     camera_tracking_packet_to_network_dict,
     preview_frame_from_network_dict,
     preview_frame_to_network_dict,
+    worker_config_from_network_dict,
+    worker_config_to_network_dict,
 )
-from core.models import CameraTrackingPacket, LocalTrack
+from core.models import CameraConfig, CameraTrackingPacket, LocalTrack, ProjectConfig, VenueMapConfig
 
 
 class DistributedProtocolTests(unittest.TestCase):
@@ -82,6 +86,25 @@ class DistributedProtocolTests(unittest.TestCase):
         self.assertEqual(restored["camera_id"], "camera-1")
         self.assertEqual(restored["frame_index"], 7)
         self.assertEqual(restored["jpeg_bytes"], b"jpeg")
+
+    def test_worker_config_materializes_absolute_venue_map_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as server_dir, tempfile.TemporaryDirectory() as worker_dir:
+            server_root = Path(server_dir)
+            worker_root = Path(worker_dir)
+            map_path = server_root / "mapaxd.png"
+            map_bytes = b"fake-png-bytes"
+            map_path.write_bytes(map_bytes)
+            project = ProjectConfig(
+                venue_map=VenueMapConfig(map_image_path=str(map_path)),
+                cameras=[CameraConfig(camera_id="camera-1", runtime_mode="remote")],
+            )
+
+            payload = worker_config_to_network_dict(project, project.cameras[0], server_root)
+            _, venue_map, _, _, _ = worker_config_from_network_dict(payload, worker_root)
+
+            self.assertTrue(venue_map.map_image_path.startswith("data/distributed_assets/venue/"))
+            materialized_path = worker_root / venue_map.map_image_path
+            self.assertEqual(materialized_path.read_bytes(), map_bytes)
 
 
 if __name__ == "__main__":
