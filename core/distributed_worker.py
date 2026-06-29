@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 import time
@@ -34,6 +35,23 @@ from core.statistics_service import StatisticsService
 from core.streaming import CameraPipelineWorker
 
 
+LOGGER = logging.getLogger("fair_monitor.worker")
+LOG_FORMAT = "%(asctime)s %(levelname)s [worker] %(message)s"
+LOG_DATE_FORMAT = "%H:%M:%S"
+
+
+def configure_worker_logging(level_name: str = "INFO") -> None:
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    LOGGER.setLevel(level)
+    LOGGER.propagate = False
+    if not LOGGER.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        LOGGER.addHandler(handler)
+    for handler in LOGGER.handlers:
+        handler.setLevel(level)
+
+
 class DistributedCameraWorker:
     def __init__(
         self,
@@ -66,18 +84,55 @@ class DistributedCameraWorker:
 
     def run_forever(self) -> None:
         self._heartbeat_thread.start()
+        LOGGER.info(
+            "Starting worker camera_id=%s worker_id=%s target=%s:%s hostname=%s protocol=%s",
+            self.camera_id,
+            self.camera_config.remote_worker_id or "<auto>",
+            self.server_host,
+            self.server_port,
+            socket.gethostname(),
+            self.project_config.distributed_runtime.protocol_version,
+        )
+        if self.server_host in {"0.0.0.0", "::"}:
+            LOGGER.warning(
+                "Worker target host is %s, which is usually a server bind address. "
+                "Use the server PC LAN IP with --server-host.",
+                self.server_host,
+            )
         backoff_s = 1.0
         while self._running:
             try:
                 self._reload_project()
                 self._connect_and_stream()
                 backoff_s = 1.0
-            except OSError:
+                if self._running:
+                    LOGGER.warning(
+                        "Disconnected from server %s:%s; retrying in %.1fs",
+                        self.server_host,
+                        self.server_port,
+                        backoff_s,
+                    )
+                    time.sleep(backoff_s)
+                    backoff_s = min(backoff_s * 2.0, 8.0)
+            except OSError as exc:
+                hint = _connection_failure_hint(exc, self.server_port)
+                suffix = f" ({hint})" if hint else ""
+                LOGGER.warning(
+                    "Connection to %s:%s failed: %s; retrying in %.1fs%s",
+                    self.server_host,
+                    self.server_port,
+                    exc,
+                    backoff_s,
+                    suffix,
+                )
+                LOGGER.debug("Worker connection failure details", exc_info=True)
                 time.sleep(backoff_s)
                 backoff_s = min(backoff_s * 2.0, 8.0)
             except KeyboardInterrupt:
+                LOGGER.info("Worker interrupted; shutting down")
                 break
         self.stop()
+        LOGGER.info("Worker stopped")
 
     def stop(self) -> None:
         self._running = False
@@ -97,31 +152,41 @@ class DistributedCameraWorker:
                 pass
 
     def _connect_and_stream(self) -> None:
+        LOGGER.info("Connecting to server %s:%s", self.server_host, self.server_port)
         sock = socket.create_connection((self.server_host, self.server_port), timeout=5.0)
         sock.settimeout(0.5)
         with self._socket_lock:
             self._socket = sock
         self._connected = True
-        self._send_message(
-            {
-                "type": MESSAGE_HELLO,
-                "worker_id": self.camera_config.remote_worker_id,
-                "camera_id": self.camera_id,
-                "app_version": "distributed-runtime-test",
-                "hostname": socket.gethostname(),
-                "protocol_version": self.project_config.distributed_runtime.protocol_version,
-                "config_hash": camera_config_sha256(self.camera_config),
-            }
-        )
+        LOGGER.info("Connected to server %s:%s", self.server_host, self.server_port)
+        hello = {
+            "type": MESSAGE_HELLO,
+            "worker_id": self.camera_config.remote_worker_id,
+            "camera_id": self.camera_id,
+            "app_version": "distributed-runtime-test",
+            "hostname": socket.gethostname(),
+            "protocol_version": self.project_config.distributed_runtime.protocol_version,
+            "config_hash": camera_config_sha256(self.camera_config),
+        }
+        if self._send_message(hello):
+            LOGGER.info(
+                "Sent hello camera_id=%s worker_id=%s config_hash=%s",
+                self.camera_id,
+                self.camera_config.remote_worker_id or "<empty>",
+                hello["config_hash"],
+            )
         buffer = bytearray()
         while self._running and self._connected:
             try:
                 chunk = sock.recv(65536)
             except TimeoutError:
                 continue
-            except OSError:
+            except OSError as exc:
+                LOGGER.warning("Connection lost while reading from server: %s", exc)
+                LOGGER.debug("Worker receive failure details", exc_info=True)
                 break
             if not chunk:
+                LOGGER.warning("Server closed the connection")
                 break
             buffer.extend(chunk)
             for message in unpack_from_buffer(buffer):
@@ -138,6 +203,7 @@ class DistributedCameraWorker:
     def _handle_message(self, message: dict[str, object]) -> None:
         message_type = str(message.get("type", ""))
         if message_type == MESSAGE_WORKER_CONFIG:
+            LOGGER.info("Received worker config from server")
             payload = message.get("payload", {})
             if isinstance(payload, dict):
                 self._apply_worker_config(payload)
@@ -151,19 +217,31 @@ class DistributedCameraWorker:
             playback_sync = message.get("playback_sync", {})
             if isinstance(playback_sync, dict):
                 self._playback_sync = PlaybackSyncConfig.from_dict(playback_sync)
+            LOGGER.info("Received start session sync_mode=%s", self._session_sync_mode)
             self._start_pipeline()
             return
         if message_type == MESSAGE_STOP_SESSION:
+            LOGGER.info("Received stop session")
             self._session_started_at_unix_s = None
             self._stop_pipeline()
             return
         if message_type == MESSAGE_ERROR:
-            print(f"Server error for {self.camera_id}: {message.get('message', '')}")
+            LOGGER.error("Server error for %s: %s", self.camera_id, message.get("message", ""))
+            return
+        LOGGER.debug("Ignoring server message type=%s", message_type or "<empty>")
 
     def _start_pipeline(self) -> None:
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+            LOGGER.debug("Pipeline already running for camera_id=%s", self.camera_id)
             return
         file_playback_started_wall_time = self._file_playback_started_wall_time()
+        LOGGER.info(
+            "Starting camera pipeline camera_id=%s source=%s:%s sync_mode=%s",
+            self.camera_id,
+            self.camera_config.source_type,
+            self.camera_config.source_value or "<empty>",
+            self._session_sync_mode,
+        )
         worker = CameraPipelineWorker(
             camera_config=CameraConfig.from_dict(self.camera_config.to_dict()),
             venue_map=self.project_config.venue_map,
@@ -183,6 +261,7 @@ class DistributedCameraWorker:
         self._pipeline_worker = worker
         self._pipeline_thread = threading.Thread(target=worker.run, name=f"worker-{self.camera_id}", daemon=True)
         self._pipeline_thread.start()
+        LOGGER.info("Camera pipeline thread started camera_id=%s", self.camera_id)
 
     def _apply_worker_config(self, payload: dict[str, object]) -> None:
         camera_config, venue_map, playback_sync, distributed_runtime, config_hash = (
@@ -202,11 +281,21 @@ class DistributedCameraWorker:
         self._playback_sync = PlaybackSyncConfig.from_dict(playback_sync.to_dict())
         self._server_config_hash = config_hash
         self._preview_interval_s = 1.0 / max(distributed_runtime.preview_fps, 0.5)
+        LOGGER.info(
+            "Applied worker config camera_id=%s worker_id=%s source=%s:%s preview_fps=%.2f config_hash=%s",
+            self.camera_id,
+            self.camera_config.remote_worker_id or "<empty>",
+            self.camera_config.source_type,
+            self.camera_config.source_value or "<empty>",
+            distributed_runtime.preview_fps,
+            config_hash,
+        )
         worker = self._pipeline_worker
         thread = self._pipeline_thread
         if worker is None or thread is None or not thread.is_alive():
             return
         if previous_source != next_source:
+            LOGGER.info("Camera source changed; restarting pipeline camera_id=%s", self.camera_id)
             self._stop_pipeline()
             self._start_pipeline()
             return
@@ -223,6 +312,8 @@ class DistributedCameraWorker:
     def _stop_pipeline(self) -> None:
         worker = self._pipeline_worker
         thread = self._pipeline_thread
+        if worker is not None or thread is not None:
+            LOGGER.info("Stopping camera pipeline camera_id=%s", self.camera_id)
         if worker is not None:
             worker.stop()
         if thread is not None and thread.is_alive():
@@ -274,7 +365,7 @@ class DistributedCameraWorker:
         )
 
     def _handle_status_changed(self, status_text: str) -> None:
-        print(f"[{self.camera_id}] {status_text}")
+        LOGGER.info("%s: %s", self.camera_id, status_text)
         self._send_message(
             {
                 "type": MESSAGE_STATUS,
@@ -284,7 +375,7 @@ class DistributedCameraWorker:
         )
 
     def _handle_error(self, message: str) -> None:
-        print(f"[{self.camera_id}] ERROR: {message}")
+        LOGGER.error("%s: %s", self.camera_id, message)
         self._send_message(
             {
                 "type": MESSAGE_ERROR,
@@ -305,17 +396,21 @@ class DistributedCameraWorker:
                 )
             time.sleep(self.project_config.distributed_runtime.worker_heartbeat_interval_s)
 
-    def _send_message(self, message: dict[str, object]) -> None:
+    def _send_message(self, message: dict[str, object]) -> bool:
         if not self._connected:
-            return
+            return False
         with self._socket_lock:
             sock = self._socket
             if sock is None:
-                return
+                return False
             try:
                 sock.sendall(pack_message(message))
-            except OSError:
+            except OSError as exc:
+                LOGGER.warning("Failed to send %s message to server: %s", message.get("type", "<unknown>"), exc)
+                LOGGER.debug("Worker send failure details", exc_info=True)
                 self._connected = False
+                return False
+        return True
 
     def _reload_project(self) -> None:
         self.project_config = self.config_repo.load_project()
@@ -355,7 +450,9 @@ def run_worker_process(
     camera_id: str,
     server_host: str | None = None,
     server_port: int | None = None,
+    log_level: str = "INFO",
 ) -> int:
+    configure_worker_logging(log_level)
     worker = DistributedCameraWorker(
         project_root=project_root,
         camera_id=camera_id,
@@ -364,3 +461,18 @@ def run_worker_process(
     )
     worker.run_forever()
     return 0
+
+
+def _connection_failure_hint(exc: OSError, port: int) -> str:
+    if isinstance(exc, ConnectionRefusedError):
+        return (
+            f"the host responded but no server accepted TCP port {port}; "
+            "check that server mode is running/listening and that the firewall allows it"
+        )
+    if isinstance(exc, TimeoutError):
+        return "the connection timed out; check the IP address, routing, and firewall"
+    if isinstance(exc, socket.gaierror):
+        return "the host name could not be resolved"
+    if isinstance(exc, OSError) and exc.errno in {101, 113}:
+        return "the network or host is unreachable; check both PCs are on the same LAN/VPN"
+    return ""
