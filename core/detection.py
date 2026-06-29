@@ -4,10 +4,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
 
 from core.calibration import bottom_center, invert_homography, project_point, project_points
 from core.models import CameraConfig, Detection, LocalTrack, VenueMapConfig
+from core.ultralytics_runtime import YOLO
 from core.zones import zone_color
 
 

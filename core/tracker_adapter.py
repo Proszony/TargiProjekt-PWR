@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from ultralytics import YOLO
 
 from core.calibration import bottom_center, project_point
 from core.detection import _extract_appearance_descriptor, _reject_fragmentary_border_detection
 from core.models import CameraConfig, Detection
+from core.ultralytics_runtime import YOLO
 
 
 class UltralyticsTrackerAdapter:
