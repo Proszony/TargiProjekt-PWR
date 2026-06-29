@@ -494,8 +494,14 @@ class CameraPipelineWorker(QObject):
             time.sleep(sleep_s)
 
     def _materialize_tracker_config(self, camera_config: CameraConfig) -> str:
+        backend = camera_config.tracker_backend
+        reid_model_spec = (
+            (Path("models") / "yolo26n-cls.pt").as_posix()
+            if backend == "botsort" and camera_config.tracker_reid_enabled
+            else "auto"
+        )
         signature = (
-            camera_config.tracker_backend,
+            backend,
             camera_config.tracker_reid_enabled,
             camera_config.tracker_track_buffer,
             round(camera_config.tracker_match_thresh, 4),
@@ -503,10 +509,10 @@ class CameraPipelineWorker(QObject):
             round(camera_config.tracker_proximity_thresh, 4),
             round(camera_config.tracker_appearance_thresh, 4),
             round(self._tracker_adapter.confidence, 4),
+            reid_model_spec,
         )
         runtime_dir = Path.cwd() / "data" / "runtime_trackers"
         runtime_dir.mkdir(parents=True, exist_ok=True)
-        backend = camera_config.tracker_backend
         runtime_path = runtime_dir / f"{camera_config.camera_id}_{backend}.yaml"
         if signature == self._runtime_tracker_signature and runtime_path.exists():
             return str(runtime_path)
@@ -527,7 +533,7 @@ class CameraPipelineWorker(QObject):
                     f"proximity_thresh: {camera_config.tracker_proximity_thresh:.3f}",
                     f"appearance_thresh: {camera_config.tracker_appearance_thresh:.3f}",
                     f"with_reid: {'True' if camera_config.tracker_reid_enabled else 'False'}",
-                    "model: auto",
+                    f"model: {reid_model_spec}",
                 ]
             )
         runtime_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

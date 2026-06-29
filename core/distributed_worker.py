@@ -153,8 +153,11 @@ class DistributedCameraWorker:
 
     def _connect_and_stream(self) -> None:
         LOGGER.info("Connecting to server %s:%s", self.server_host, self.server_port)
-        sock = socket.create_connection((self.server_host, self.server_port), timeout=5.0)
-        sock.settimeout(0.5)
+        sock = socket.create_connection(
+            (self.server_host, self.server_port),
+            timeout=rd.DEFAULT_DISTRIBUTED_SOCKET_IO_TIMEOUT_S,
+        )
+        sock.settimeout(rd.DEFAULT_DISTRIBUTED_SOCKET_IO_TIMEOUT_S)
         with self._socket_lock:
             self._socket = sock
         self._connected = True
@@ -413,6 +416,8 @@ class DistributedCameraWorker:
         return True
 
     def _reload_project(self) -> None:
+        if self._server_config_hash:
+            return
         self.project_config = self.config_repo.load_project()
         self.camera_config = self._camera_config(self.project_config)
         self._preview_interval_s = 1.0 / max(self.project_config.distributed_runtime.preview_fps, 0.5)

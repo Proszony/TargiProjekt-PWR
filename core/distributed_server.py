@@ -9,6 +9,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from core import runtime_defaults as rd
 from core.distributed_protocol import (
     DistributedProtocolError,
     MESSAGE_CAMERA_PACKET,
@@ -185,7 +186,7 @@ class DistributedRuntimeServer(QObject):
             time.sleep(0.5)
 
     def _handle_client(self, client_socket: socket.socket, address: tuple[str, int]) -> None:
-        client_socket.settimeout(0.5)
+        client_socket.settimeout(rd.DEFAULT_DISTRIBUTED_SOCKET_IO_TIMEOUT_S)
         buffer = bytearray()
         connection: _WorkerConnection | None = None
         try:

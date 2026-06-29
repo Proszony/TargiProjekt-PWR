@@ -76,6 +76,40 @@ class DistributedWorkerTests(unittest.TestCase):
         self.assertAlmostEqual(worker.project_config.distributed_runtime.preview_fps, 4.0)
         self.assertAlmostEqual(worker._preview_interval_s, 0.25)
 
+    def test_reload_project_preserves_server_config_after_sync(self) -> None:
+        class ConfigRepoStub:
+            def load_project(self) -> ProjectConfig:
+                return ProjectConfig(
+                    cameras=[
+                        CameraConfig(
+                            camera_id="camera-1",
+                            runtime_mode="remote",
+                            source_value="udp://0.0.0.0:5000",
+                        )
+                    ],
+                    distributed_runtime=DistributedRuntimeConfig(preview_fps=1.0),
+                )
+
+        worker = DistributedCameraWorker.__new__(DistributedCameraWorker)
+        worker.camera_id = "camera-1"
+        worker.config_repo = ConfigRepoStub()
+        worker.camera_config = CameraConfig(
+            camera_id="camera-1",
+            runtime_mode="remote",
+            source_value="udp://0.0.0.0:12345",
+        )
+        worker.project_config = ProjectConfig(
+            cameras=[worker.camera_config],
+            distributed_runtime=DistributedRuntimeConfig(preview_fps=4.0),
+        )
+        worker._server_config_hash = "server-config"
+        worker._preview_interval_s = 0.25
+
+        worker._reload_project()
+
+        self.assertEqual(worker.camera_config.source_value, "udp://0.0.0.0:12345")
+        self.assertAlmostEqual(worker._preview_interval_s, 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()
