@@ -204,6 +204,59 @@ class DistributedRuntimeTests(unittest.TestCase):
 
             self.assertIn(("camera-remote", 17.5), fps_updates)
 
+    def test_remote_live_packets_are_coalesced_between_processing_ticks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project = ProjectConfig(
+                cameras=[
+                    CameraConfig(
+                        camera_id="camera-remote",
+                        runtime_mode="remote",
+                        remote_worker_id="edge-1",
+                        calibration_valid=True,
+                        coverage_polygon_world=[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                    )
+                ],
+                distributed_runtime=DistributedRuntimeConfig(enabled=True),
+            )
+            manager = MultiCameraPipelineManager(project, StatisticsService(root), root)
+            calls: list[dict[str, object]] = []
+
+            def record_process_group(**kwargs: object) -> None:
+                calls.append(kwargs)
+
+            manager._process_packet_group = record_process_group  # type: ignore[method-assign]
+            manager._last_remote_live_processed_at = time.monotonic()
+
+            first = _packet(
+                "camera-remote",
+                "camera-remote:P1",
+                (2.0, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=1,
+            )
+            second = _packet(
+                "camera-remote",
+                "camera-remote:P1",
+                (2.1, 2.0),
+                [1.0, 0.0, 0.0],
+                frame_index=2,
+            )
+            second.timestamp = first.timestamp + 0.01
+
+            manager._handle_remote_packet(first)
+            manager._handle_remote_packet(second)
+
+            self.assertEqual(calls, [])
+            self.assertTrue(manager._remote_live_process_timer.isActive())
+            manager._remote_live_process_timer.stop()
+            manager._process_pending_remote_live_packets()
+
+            self.assertEqual(len(calls), 1)
+            camera_packets = calls[0]["camera_packets"]
+            self.assertIsInstance(camera_packets, dict)
+            self.assertEqual(camera_packets["camera-remote"].frame_index, 2)
+
     def test_local_operator_preview_uses_worker_gated_frames_without_skipping_analytics(self) -> None:
         if QImage is None or QColor is None:
             self.skipTest("Qt image helpers unavailable.")

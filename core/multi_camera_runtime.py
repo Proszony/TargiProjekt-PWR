@@ -78,6 +78,11 @@ class MultiCameraPipelineManager(QObject):
         self._running = False
         self._sync_timer = QTimer(self)
         self._sync_timer.timeout.connect(self._process_media_sync_tick)
+        self._remote_live_process_timer = QTimer(self)
+        self._remote_live_process_timer.setSingleShot(True)
+        self._remote_live_process_timer.timeout.connect(self._process_pending_remote_live_packets)
+        self._last_remote_live_processed_at = 0.0
+        self._pending_remote_media_time_s: float | None = None
         self._media_synchronizer: MultiCameraMediaSynchronizer | None = None
         self._session_sync_mode = "all_live_unsynced"
         self._session_started_at_unix_s: float | None = None
@@ -180,6 +185,9 @@ class MultiCameraPipelineManager(QObject):
         self._latest_remote_preview_frame_indices.clear()
         self._latest_remote_labels_by_camera.clear()
         self._labeled_remote_preview_cache.clear()
+        self._remote_live_process_timer.stop()
+        self._last_remote_live_processed_at = 0.0
+        self._pending_remote_media_time_s = None
         self._session_started_at_unix_s = time.time()
         active_cameras = [camera for camera in self.project_config.cameras if camera.enabled]
         local_cameras = [camera for camera in active_cameras if camera.runtime_mode == "local"]
@@ -243,6 +251,7 @@ class MultiCameraPipelineManager(QObject):
             return
         self._running = False
         self._sync_timer.stop()
+        self._remote_live_process_timer.stop()
         if self._remote_server is not None:
             self._remote_server.stop_session()
         for worker in list(self._workers.values()):
@@ -334,7 +343,14 @@ class MultiCameraPipelineManager(QObject):
 
     @Slot(object)
     def _handle_remote_packet(self, packet: object) -> None:
-        self._handle_camera_packet(packet)
+        if not isinstance(packet, CameraTrackingPacket):
+            return
+        self._packets[packet.camera_id] = packet
+        self.camera_fps_changed.emit(packet.camera_id, packet.fps)
+        if self._session_sync_mode == "all_file_strict" and self._media_synchronizer is not None:
+            self._media_synchronizer.add_packet(packet)
+            return
+        self._schedule_remote_live_packet_processing(packet.media_time_s)
 
     @Slot(object)
     def _handle_remote_preview_frame(self, payload: object) -> None:
@@ -359,6 +375,45 @@ class MultiCameraPipelineManager(QObject):
     @Slot(str, str)
     def _handle_remote_camera_error(self, camera_id: str, message: str) -> None:
         self.camera_error.emit(camera_id, message)
+
+    def _schedule_remote_live_packet_processing(self, media_time_s: float | None) -> None:
+        self._pending_remote_media_time_s = media_time_s
+        now = time.monotonic()
+        min_interval_s = 1.0 / max(rd.DEFAULT_DISTRIBUTED_SERVER_PROCESS_FPS, 1.0)
+        elapsed_s = now - self._last_remote_live_processed_at
+        if elapsed_s >= min_interval_s and not self._remote_live_process_timer.isActive():
+            self._process_pending_remote_live_packets()
+            return
+        if not self._remote_live_process_timer.isActive():
+            delay_ms = max(int(round((min_interval_s - elapsed_s) * 1000.0)), 1)
+            self._remote_live_process_timer.start(delay_ms)
+
+    @Slot()
+    def _process_pending_remote_live_packets(self) -> None:
+        if not self._packets:
+            return
+        self._last_remote_live_processed_at = time.monotonic()
+        latest_packet = max(self._packets.values(), key=lambda packet: packet.timestamp)
+        session_media_time_s = (
+            self._pending_remote_media_time_s
+            if self._pending_remote_media_time_s is not None
+            else latest_packet.media_time_s
+        )
+        self._pending_remote_media_time_s = None
+        self._process_packet_group(
+            timestamp=latest_packet.timestamp,
+            camera_packets=dict(self._packets),
+            missing_cameras=self._current_missing_cameras(),
+            dropped_frames_by_camera={
+                camera_id: camera_packet.dropped_frame_count
+                for camera_id, camera_packet in self._packets.items()
+            },
+            sync_drift_by_camera={
+                camera_id: 0.0
+                for camera_id in self._packets
+            },
+            session_media_time_s=session_media_time_s,
+        )
 
     @Slot()
     def _process_media_sync_tick(self) -> None:
